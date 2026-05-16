@@ -1,0 +1,50 @@
+# Tier 2 hardening - node-level fixes via Ansible.
+# Run after Tier 1 (kubectl manifests) succeeds.
+#
+# Assumes a kubeadm-installed cluster with manifests in /etc/kubernetes/manifests
+# and kubelet config at /var/lib/kubelet/config.yaml.
+#
+# Requires SSH access + sudo on all control-plane and worker nodes.
+---
+- name: Apply CIS baseline file permissions
+  hosts: all
+  become: true
+  gather_facts: true
+  tags: [common, perms]
+  roles:
+    - common
+
+- name: Harden kube-apiserver
+  hosts: control_plane
+  become: true
+  tags: [apiserver]
+  roles:
+    - api-server
+
+- name: Harden kube-controller-manager
+  hosts: control_plane
+  become: true
+  tags: [controller_manager]
+  roles:
+    - controller-manager
+
+- name: Harden kube-scheduler
+  hosts: control_plane
+  become: true
+  tags: [scheduler]
+  roles:
+    - scheduler
+
+- name: Harden etcd
+  hosts: control_plane
+  become: true
+  tags: [etcd]
+  roles:
+    - etcd
+
+- name: Harden kubelet
+  hosts: all
+  become: true
+  tags: [kubelet]
+  roles:
+    - kubelet

@@ -1,0 +1,78 @@
+# CIS section 1.1: Control plane node configuration files
+# Tightens file ownership and permissions for k8s + etcd files.
+---
+- name: Set permissions on kubeconfig files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "0600"
+    owner: root
+    group: root
+  loop:
+    - /etc/kubernetes/admin.conf
+    - /etc/kubernetes/scheduler.conf
+    - /etc/kubernetes/controller-manager.conf
+    - /etc/kubernetes/kubelet.conf
+  failed_when: false  # not all files exist on all nodes
+
+- name: Set permissions on static pod manifests
+  ansible.builtin.file:
+    path: "/etc/kubernetes/manifests/{{ item }}"
+    mode: "0600"
+    owner: root
+    group: root
+  loop:
+    - kube-apiserver.yaml
+    - kube-controller-manager.yaml
+    - kube-scheduler.yaml
+    - etcd.yaml
+  failed_when: false
+
+- name: Set permissions on /etc/kubernetes/pki
+  ansible.builtin.file:
+    path: /etc/kubernetes/pki
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+    recurse: false
+
+- name: Set permissions on PKI cert files (0644)
+  ansible.builtin.shell:
+    cmd: find /etc/kubernetes/pki -type f -name "*.crt" -exec chmod 0644 {} \;
+  changed_when: false
+
+- name: Set permissions on PKI key files (0600)
+  ansible.builtin.shell:
+    cmd: find /etc/kubernetes/pki -type f -name "*.key" -exec chmod 0600 {} \;
+  changed_when: false
+
+- name: Set ownership across /etc/kubernetes/pki
+  ansible.builtin.file:
+    path: /etc/kubernetes/pki
+    owner: root
+    group: root
+    recurse: true
+
+- name: Set permissions on etcd data dir
+  ansible.builtin.file:
+    path: /var/lib/etcd
+    state: directory
+    mode: "0700"
+    owner: root  # kubeadm runs etcd as root; for non-root etcd, change to 'etcd'
+    group: root
+  failed_when: false  # workers don't have etcd
+
+- name: Set permissions on kubelet config
+  ansible.builtin.file:
+    path: /var/lib/kubelet/config.yaml
+    mode: "0600"
+    owner: root
+    group: root
+
+- name: Set permissions on kubelet service drop-in
+  ansible.builtin.file:
+    path: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+    mode: "0600"
+    owner: root
+    group: root
+  failed_when: false

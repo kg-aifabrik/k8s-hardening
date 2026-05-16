@@ -1,0 +1,4 @@
+---
+- name: restart apiserver
+  ansible.builtin.debug:
+    msg: "kubelet will restart kube-apiserver automatically when manifest changes."

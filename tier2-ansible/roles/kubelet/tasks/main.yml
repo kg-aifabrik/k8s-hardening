@@ -1,0 +1,55 @@
+# CIS 4.2: kubelet hardening.
+# Patches /var/lib/kubelet/config.yaml with hardened settings.
+---
+- name: Read current kubelet config
+  ansible.builtin.slurp:
+    src: /var/lib/kubelet/config.yaml
+  register: kubelet_config
+
+- name: Apply hardened kubelet config
+  ansible.builtin.copy:
+    content: |
+      # Managed by k8s-cis-hardening
+      # Original config backed up at /var/lib/kubelet/config.yaml.bak
+      apiVersion: kubelet.config.k8s.io/v1beta1
+      kind: KubeletConfiguration
+      authentication:
+        anonymous:
+          enabled: false           # CIS 4.2.1
+        webhook:
+          enabled: true            # CIS 4.2.2
+          cacheTTL: 2m0s
+        x509:
+          clientCAFile: /etc/kubernetes/pki/ca.crt
+      authorization:
+        mode: Webhook              # CIS 4.2.3
+        webhook:
+          cacheAuthorizedTTL: 5m0s
+          cacheUnauthorizedTTL: 30s
+      clusterDNS: [10.96.0.10]
+      clusterDomain: cluster.local
+      cgroupDriver: systemd
+      eventRecordQPS: 5
+      readOnlyPort: 0              # CIS 4.2.4
+      streamingConnectionIdleTimeout: 5m  # CIS 4.2.5
+      protectKernelDefaults: true  # CIS 4.2.6
+      makeIPTablesUtilChains: true # CIS 4.2.7
+      eventBurst: 10
+      tlsCipherSuites:             # CIS 4.2.13
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+      featureGates:
+        RotateKubeletServerCertificate: true   # CIS 4.2.11
+      rotateCertificates: true                 # CIS 4.2.11
+      serializeImagePulls: false
+      staticPodPath: /etc/kubernetes/manifests
+    dest: /var/lib/kubelet/config.yaml
+    mode: "0600"
+    owner: root
+    group: root
+    backup: true
+  notify: restart kubelet

@@ -1,0 +1,18 @@
+# Copy to hosts.ini and fill in your nodes.
+#
+# Control plane nodes should appear in BOTH groups since 'all' includes them.
+# Worker nodes go in [workers] only.
+
+[control_plane]
+# cp1.example.local ansible_host=10.0.0.10
+# cp2.example.local ansible_host=10.0.0.11
+# cp3.example.local ansible_host=10.0.0.12
+
+[workers]
+# w1.example.local ansible_host=10.0.0.20
+# w2.example.local ansible_host=10.0.0.21
+
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=~/.ssh/id_ed25519
+ansible_python_interpreter=/usr/bin/python3

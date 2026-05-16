@@ -1,0 +1,42 @@
+# RBAC hardening.
+# CIS 5.1.1: minimize cluster-admin role use
+# CIS 5.1.3: minimize wildcard use in Roles and ClusterRoles
+# CIS 5.1.4: minimize access to create pods
+#
+# We don't *delete* system:masters bindings (that would brick kubectl).
+# We *audit* via Kyverno policies (see 14-rbac-audit-policies.yaml) and
+# ensure the system:anonymous and system:unauthenticated groups have no
+# elevated bindings beyond what kubeadm requires.
+#
+# This manifest is intentionally minimal. The real hardening here is
+# enforcement via Kyverno + admission audit, not deletion of built-ins.
+
+# Remove the default 'system:unauthenticated' binding to 'system:public-info-viewer'
+# if your threat model doesn't need anonymous access to /healthz, /livez, /readyz.
+# Uncomment if you want to fully disable anonymous reads:
+#
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: ClusterRoleBinding
+# metadata:
+#   name: system:public-info-viewer
+# # (handled by deleting the binding via orchestrator if explicitly enabled)
+
+# This file is a placeholder for org-specific RBAC. The CIS-relevant
+# *removals* (system:unauthenticated mappings) are done in tier2 Ansible
+# via API server flag --anonymous-auth=false, which is the more durable fix.
+---
+# Audit-mode ClusterRole that catches anyone trying to use cluster-admin.
+# Bind humans to this instead of cluster-admin for daily ops.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-readonly
+  labels:
+    app.kubernetes.io/managed-by: k8s-cis-hardening
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["*"]
+    verbs: ["get"]

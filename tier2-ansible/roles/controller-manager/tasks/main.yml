@@ -1,0 +1,12 @@
+# CIS 1.3: kube-controller-manager hardening.
+---
+- name: Patch kube-controller-manager manifest
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/patch_kcm.py"
+    creates: /etc/kubernetes/manifests/.kcm-hardened
+
+- name: Mark kcm as hardened
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests/.kcm-hardened
+    state: touch
+    mode: "0600"

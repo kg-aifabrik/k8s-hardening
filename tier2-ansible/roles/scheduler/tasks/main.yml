@@ -1,0 +1,12 @@
+# CIS 1.4: kube-scheduler hardening.
+---
+- name: Patch kube-scheduler manifest
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/patch_scheduler.py"
+    creates: /etc/kubernetes/manifests/.scheduler-hardened
+
+- name: Mark scheduler as hardened
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests/.scheduler-hardened
+    state: touch
+    mode: "0600"

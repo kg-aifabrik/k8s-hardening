@@ -1,0 +1,55 @@
+# Kubernetes audit policy for CIS 3.2.x compliance.
+# Adapted from upstream Kubernetes recommended starter policy.
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  # Don't log read-only requests to common endpoints
+  - level: None
+    nonResourceURLs:
+      - /healthz*
+      - /livez*
+      - /readyz*
+      - /version
+      - /swagger*
+
+  # Don't log get/list/watch from kube-system service accounts (very noisy)
+  - level: None
+    users: ["system:kube-proxy"]
+    verbs: ["watch"]
+    resources:
+      - { group: "", resources: [endpoints, services, services/status] }
+
+  - level: None
+    userGroups: ["system:nodes"]
+    verbs: ["get"]
+    resources:
+      - { group: "", resources: [nodes, nodes/status] }
+
+  # Secrets and configmaps: only log metadata
+  - level: Metadata
+    resources:
+      - { group: "", resources: [secrets, configmaps] }
+      - { group: authentication.k8s.io, resources: [tokenreviews] }
+    omitStages: [RequestReceived]
+
+  # All authentication events
+  - level: Request
+    resources:
+      - { group: authentication.k8s.io, resources: ["*"] }
+
+  # Log writes (create, update, patch, delete) at Request level
+  - level: Request
+    verbs: [create, update, patch, delete, deletecollection]
+    resources:
+      - { group: "" }
+      - { group: apps }
+      - { group: batch }
+      - { group: rbac.authorization.k8s.io }
+      - { group: networking.k8s.io }
+      - { group: policy }
+
+  # Catch-all
+  - level: Metadata
+    omitStages: [RequestReceived]

@@ -1,0 +1,32 @@
+# Default-deny ingress AND egress for all standard namespaces.
+# CIS 5.3.2: "Ensure that all Namespaces have Network Policies defined"
+#
+# IMPORTANT: 'kube-system' is intentionally excluded - CoreDNS, kube-proxy,
+# and CNI components need to talk. Apply per-component policies there instead.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: kube-public
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: kube-node-lease
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

@@ -1,0 +1,61 @@
+# Disallow Linux capabilities beyond the baseline drop-all set.
+# CIS 5.2.7, PSS restricted.
+#
+# Restricted profile requires:
+#  - capabilities.drop must include "ALL"
+#  - capabilities.add may only include "NET_BIND_SERVICE"
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-capabilities
+  annotations:
+    policies.kyverno.io/title: Restrict Linux Capabilities
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-drop-all
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: "Containers must drop ALL capabilities."
+        pattern:
+          spec:
+            =(initContainers):
+              - securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+            containers:
+              - securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+
+    - name: restrict-add-capabilities
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno]
+      validate:
+        message: "Only NET_BIND_SERVICE may be added to capabilities."
+        pattern:
+          spec:
+            =(initContainers):
+              - =(securityContext):
+                  =(capabilities):
+                    =(add): ["NET_BIND_SERVICE"]
+            containers:
+              - =(securityContext):
+                  =(capabilities):
+                    =(add): ["NET_BIND_SERVICE"]

@@ -1,0 +1,42 @@
+# CIS 1.2: kube-apiserver hardening.
+# Edits the static pod manifest in-place. kubelet will restart the pod
+# automatically when the manifest changes.
+#
+# NOTE: Audit policy file must exist on disk before --audit-policy-file is set.
+---
+- name: Ensure audit log dir exists
+  ansible.builtin.file:
+    path: /var/log/kubernetes
+    state: directory
+    mode: "0750"
+    owner: root
+    group: root
+
+- name: Install audit policy file
+  ansible.builtin.copy:
+    src: audit-policy.yaml
+    dest: /etc/kubernetes/audit-policy.yaml
+    mode: "0600"
+    owner: root
+    group: root
+  notify: restart apiserver
+
+- name: Read current kube-apiserver manifest
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: apiserver_manifest
+
+# We use a Python helper because YAML manipulation of multi-line command args
+# is fiddly. The helper is idempotent.
+- name: Patch kube-apiserver flags
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/patch_apiserver.py"
+  args:
+    creates: /etc/kubernetes/manifests/.apiserver-hardened
+  notify: restart apiserver
+
+- name: Mark apiserver as hardened
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests/.apiserver-hardened
+    state: touch
+    mode: "0600"

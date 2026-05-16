@@ -1,0 +1,30 @@
+# Reports are generated, not source
+reports/
+
+# Real inventory (template only is checked in)
+tier2-ansible/inventory/hosts.ini
+tier2-ansible/inventory/*.yaml
+tier2-ansible/inventory/*.yml
+!tier2-ansible/inventory/hosts.ini.example
+
+# Ansible artifacts
+*.retry
+.ansible/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Secrets - just in case
+*.key
+*.pem
+!**/files/*.py

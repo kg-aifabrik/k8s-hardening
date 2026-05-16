@@ -1,0 +1,28 @@
+# Disable automountServiceAccountToken on every default ServiceAccount.
+# CIS 5.1.5: "Ensure that default service accounts are not actively used"
+# CIS 5.1.6: "Ensure that Service Account Tokens are only mounted where necessary"
+#
+# Patches the 'default' SA in each standard namespace. New namespaces
+# created later need the same patch (Kyverno policy 10-disallow-default-sa
+# handles enforcement going forward).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: default
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: kube-public
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: kube-node-lease
+automountServiceAccountToken: false

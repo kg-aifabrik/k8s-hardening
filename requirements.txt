@@ -1,0 +1,3 @@
+# Python dependencies for the orchestrator.
+# stdlib only currently - keeping it dependency-free.
+# Pin here if you add any (requests, kubernetes, etc.)

@@ -1,0 +1,53 @@
+# CIS 1.5 + 2.x: etcd hardening + encryption-at-rest enablement.
+#
+# Generates an EncryptionConfiguration for kube-apiserver and patches the
+# api-server manifest to reference it.
+#
+# IMPORTANT: After enabling, all *new* secrets are encrypted. To encrypt
+# *existing* secrets you must run a post-step: `kubectl get secrets -A -o json
+# | kubectl replace -f -`. The orchestrator does NOT do this automatically
+# on Tier 2 - it's a Tier 3 manual step (see docs/TIER3-MANUAL.md).
+---
+- name: Check whether encryption config already exists
+  ansible.builtin.stat:
+    path: /etc/kubernetes/encryption-config.yaml
+  register: enc_config
+
+- name: Generate AES-CBC encryption key (one time)
+  ansible.builtin.shell:
+    cmd: head -c 32 /dev/urandom | base64
+  register: enc_key
+  when: not enc_config.stat.exists
+  changed_when: true
+
+- name: Install EncryptionConfiguration
+  ansible.builtin.copy:
+    content: |
+      apiVersion: apiserver.config.k8s.io/v1
+      kind: EncryptionConfiguration
+      resources:
+        - resources: [secrets]
+          providers:
+            - aescbc:
+                keys:
+                  - name: cis-hardening-key-1
+                    secret: {{ enc_key.stdout }}
+            - identity: {}
+    dest: /etc/kubernetes/encryption-config.yaml
+    mode: "0600"
+    owner: root
+    group: root
+  when: not enc_config.stat.exists
+
+- name: Ensure --encryption-provider-config flag is set on kube-apiserver
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/patch_etcd_enc.py"
+  changed_when: false  # the script reports its own changes
+
+- name: Set etcd manifest permissions
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests/etcd.yaml
+    mode: "0600"
+    owner: root
+    group: root
+  failed_when: false
