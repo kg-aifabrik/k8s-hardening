@@ -24,6 +24,9 @@ venv/
 *.swp
 .DS_Store
 
+# Local tooling state
+.claude/
+
 # Secrets - just in case
 *.key
 *.pem

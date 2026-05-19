@@ -188,9 +188,16 @@ curl -s https://raw.githubusercontent.com/kubescape/kubescape/master/install.sh 
 
 git clone https://github.com/kgajjala/k8s-hardening.git && cd k8s-hardening
 cp tier2-ansible/inventory/hosts.ini.example tier2-ansible/inventory/hosts.ini
-# point the inventory at localhost with a local connection:
-#   [all]
-#   localhost ansible_connection=local ansible_become=true
+# point the inventory at localhost in BOTH groups (the playbook targets
+# `control_plane` and `all` separately). Replace hosts.ini contents with:
+#   [control_plane]
+#   localhost ansible_connection=local
+#
+#   [workers]
+#   localhost ansible_connection=local
+#
+#   [all:vars]
+#   ansible_python_interpreter=/usr/bin/python3
 ./harden.py all --inventory tier2-ansible/inventory/hosts.ini
 ```
 
