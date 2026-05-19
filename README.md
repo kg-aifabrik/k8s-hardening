@@ -131,6 +131,79 @@ The remaining 5-8% is **Tier 3 manual work** documented in `docs/TIER3-MANUAL.md
 - Re-encryption of existing secrets after enabling KMS
 - Image admission policy (signing verification - cosign)
 
+## Running on Oracle Cloud Free Tier (single node, ~$0)
+
+The cheapest real (self-managed, kubeadm) cluster: one **Always Free
+Ampere A1** VM. Tier 2 needs SSH+sudo to control-plane nodes, so managed
+K8s and `kind` don't work — a throwaway single-node kubeadm box does.
+One node covers all CIS targets (master/etcd/node/policies).
+
+Everything below is arm64-clean: kube-bench (`aquasec/kube-bench`),
+Kyverno, and the `kubescape` CLI all ship arm64 builds.
+
+### 1. Provision the VM (OCI console)
+
+- Compute → Instances → Create.
+- Image: **Ubuntu 22.04**. Shape: **VM.Standard.A1.Flex**,
+  Always Free eligible (use up to 4 OCPU / 24 GB; 2 OCPU / 12 GB is plenty).
+- Add your **SSH public key**.
+- Networking: keep the auto-created VCN; note the **public IP**.
+- After boot, open the API/SSH ports (VCN → Security List, or run
+  harden.py *on the node* so only port 22 is needed):
+  ingress TCP `22` and `6443` from your IP.
+
+### 2. Bootstrap a single-node kubeadm cluster
+
+SSH in (`ssh ubuntu@<public-ip>`) and run:
+
+```bash
+# containerd + kubeadm/kubelet/kubectl (pin to a 1.29.x line)
+sudo apt-get update && sudo apt-get install -y containerd apt-transport-https
+sudo mkdir -p /etc/containerd && containerd config default \
+  | sudo tee /etc/containerd/config.toml >/dev/null
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+sudo systemctl restart containerd
+sudo swapoff -a
+# (install kubeadm/kubelet/kubectl per kubernetes.io for v1.29; arm64 repo)
+
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+mkdir -p ~/.kube && sudo cp /etc/kubernetes/admin.conf ~/.kube/config \
+  && sudo chown $(id -u):$(id -g) ~/.kube/config
+
+# single node: let it run workloads
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+# a CNI (Flannel matches the pod-cidr above)
+kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/v0.25.1/Documentation/kube-flannel.yml
+```
+
+### 3. Run the hardening toolset *on the node*
+
+Running it on the box itself means Ansible uses a local connection — no
+extra SSH wiring, and only port 22 needs to be open.
+
+```bash
+sudo apt-get install -y python3 ansible-core
+# kubescape CLI (arm64)
+curl -s https://raw.githubusercontent.com/kubescape/kubescape/master/install.sh | /bin/bash
+
+git clone https://github.com/kgajjala/k8s-hardening.git && cd k8s-hardening
+cp tier2-ansible/inventory/hosts.ini.example tier2-ansible/inventory/hosts.ini
+# point the inventory at localhost with a local connection:
+#   [all]
+#   localhost ansible_connection=local ansible_become=true
+./harden.py all --inventory tier2-ansible/inventory/hosts.ini
+```
+
+Reports land in `reports/`. `scp` them back, or read
+`reports/post_*/delta.md` on the node.
+
+### 4. Destroy
+
+This framework targets fresh throwaway clusters — don't keep it. In the
+OCI console, **terminate the instance** when done (Always Free has no
+hourly cost, but leaving a hardened-then-abandoned box around is the
+opposite of the point).
+
 ## Rolling back
 
 See `docs/ROLLBACK.md`. Tier 1 is fully reversible via `kubectl delete -f`.
