@@ -11,11 +11,14 @@ MANIFEST = Path("/etc/kubernetes/manifests/kube-apiserver.yaml")
 FLAG = "--encryption-provider-config"
 FLAG_VALUE = "/etc/kubernetes/encryption-config.yaml"
 
+# kubeadm 'volumes:' list items sit at 2-space indent (same column as the
+# 'volumes:' key). A 4-space dash here would be parsed as a nested list and
+# crash-loop kube-apiserver.
 VOLUME_BLOCK = """\
-    - name: encryption-config
-      hostPath:
-        path: /etc/kubernetes/encryption-config.yaml
-        type: File"""
+  - name: encryption-config
+    hostPath:
+      path: /etc/kubernetes/encryption-config.yaml
+      type: File"""
 
 VOLUME_MOUNT_BLOCK = """\
     - name: encryption-config

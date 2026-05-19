@@ -21,7 +21,12 @@ CIS_FLAGS = {
     "--audit-policy-file":               "/etc/kubernetes/audit-policy.yaml",
     "--request-timeout":                 "60s",
     "--service-account-lookup":          "true",
-    "--enable-admission-plugins":        "NodeRestriction,EventRateLimit,AlwaysPullImages",
+    # NOTE: EventRateLimit is intentionally NOT enabled here. It requires
+    # --admission-control-config-file pointing at an AdmissionConfiguration
+    # with an EventRateLimit section; enabling it without that file makes
+    # kube-apiserver crash-loop. Configuring it (plus the hostPath mount the
+    # static pod needs to read the file) is Tier 3 manual work.
+    "--enable-admission-plugins":        "NodeRestriction,AlwaysPullImages",
     "--tls-cipher-suites":               (
         "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,"
         "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,"
@@ -38,6 +43,99 @@ FORBIDDEN = [
     "--insecure-port",
     "--token-auth-file",
 ]
+
+
+# Volumes/mounts the CIS audit flags depend on. Without these the
+# kube-apiserver container cannot see the audit policy file or write the
+# audit log, and the static pod crash-loops.
+REQUIRED_MOUNTS = [
+    {
+        "name": "audit-policy",
+        "path": "/etc/kubernetes/audit-policy.yaml",
+        "host_type": "File",
+        "read_only": True,
+    },
+    {
+        "name": "audit-logs",
+        "path": "/var/log/kubernetes",
+        "host_type": "DirectoryOrCreate",
+        "read_only": False,
+    },
+]
+
+
+def _section_bounds(lines: list[str], key: str):
+    """Return (header_idx, item_indent, section_end_exclusive) for a YAML
+    list named `key`, or None. YAML allows list items at the same indent as
+    the key (kubeadm style) or deeper; both are handled.
+    """
+    for i, ln in enumerate(lines):
+        if ln.strip() != f"{key}:":
+            continue
+        hdr_indent = len(ln) - len(ln.lstrip())
+        item_indent = None
+        end = len(lines)
+        for j in range(i + 1, len(lines)):
+            s = lines[j].lstrip()
+            if not s:
+                continue
+            ind = len(lines[j]) - len(s)
+            if item_indent is None:
+                if s.startswith("- ") and ind >= hdr_indent:
+                    item_indent = ind
+                else:  # something other than our list started
+                    end = j
+                    break
+            # section continues while lines are at >= item_indent
+            if ind < item_indent and not (s.startswith("- ")
+                                          and ind == item_indent):
+                end = j
+                break
+        if item_indent is None:
+            item_indent = hdr_indent + 2
+            end = i + 1
+        return i, " " * item_indent, end
+    return None
+
+
+def ensure_volume_mounts(out: list[str]) -> bool:
+    """Insert hostPath volumes + volumeMounts for the audit flags if missing.
+
+    Text-based on purpose: control-plane nodes are not guaranteed to have
+    PyYAML, and the kubeadm manifest layout is stable.
+    """
+    changed = False
+    for key in ("volumeMounts", "volumes"):
+        bounds = _section_bounds(out, key)
+        if bounds is None:
+            print(f"could not find '{key}:' in manifest", file=sys.stderr)
+            continue
+        hdr, item_indent, end = bounds
+        section_text = "\n".join(out[hdr:end])  # presence check, scoped
+        insert_at = hdr + 1
+        for m in REQUIRED_MOUNTS:
+            if f"name: {m['name']}" in section_text:
+                continue
+            if key == "volumeMounts":
+                lines = [
+                    f"{item_indent}- mountPath: {m['path']}",
+                    f"{item_indent}  name: {m['name']}",
+                ]
+                if m["read_only"]:
+                    lines.append(f"{item_indent}  readOnly: true")
+            else:
+                lines = [
+                    f"{item_indent}- hostPath:",
+                    f"{item_indent}    path: {m['path']}",
+                    f"{item_indent}    type: {m['host_type']}",
+                    f"{item_indent}  name: {m['name']}",
+                ]
+            print(f"adding {key[:-1]}: {m['name']}")
+            for off, l in enumerate(lines):
+                out.insert(insert_at + off, l)
+            insert_at += len(lines)
+            changed = True
+    return changed
 
 
 def main() -> int:
@@ -122,6 +220,9 @@ def main() -> int:
             out.insert(insert_at, desired)
             insert_at += 1
             changed = True
+
+    if ensure_volume_mounts(out):
+        changed = True
 
     if changed:
         new_text = "\n".join(out) + ("\n" if original.endswith("\n") else "")

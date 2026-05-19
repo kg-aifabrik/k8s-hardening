@@ -24,7 +24,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: [kube-system, kyverno]
+              namespaces: [kube-system, kyverno, kube-bench-scan]
       validate:
         message: "Containers must drop ALL capabilities."
         pattern:
@@ -46,7 +46,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: [kube-system, kyverno]
+              namespaces: [kube-system, kyverno, kube-bench-scan]
       validate:
         message: "Only NET_BIND_SERVICE may be added to capabilities."
         pattern:

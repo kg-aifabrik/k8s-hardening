@@ -28,7 +28,11 @@ spec:
       containers:
         - name: kube-bench
           image: docker.io/aquasec/kube-bench:v0.10.4
-          args: ["run", "--targets", "node,policies,managedservices", "--json"]
+          # No explicit --targets: kube-bench auto-detects which components
+          # (master/controlplane/node/etcd/policies) are present on the host.
+          # "managedservices" is EKS/GKE-only and is invalid for cis-1.10 on
+          # a self-managed/kubeadm cluster.
+          args: ["run", "--json"]
           volumeMounts:
             - { name: var-lib-etcd,         mountPath: /var/lib/etcd,         readOnly: true }
             - { name: var-lib-kubelet,      mountPath: /var/lib/kubelet,      readOnly: true }

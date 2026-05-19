@@ -20,7 +20,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: [kube-system]
+              namespaces: [kube-system, kube-bench-scan]
       validate:
         message: "hostPath volumes are not allowed."
         pattern:

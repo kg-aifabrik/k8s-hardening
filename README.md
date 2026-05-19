@@ -53,7 +53,8 @@ On the workstation running `harden.py`:
 
 - `python` 3.10+
 - `kubectl` (with kubeconfig pointing at the cluster)
-- `kubescape` ([install](https://kubescape.io/docs/install-cli/))
+- `kubescape` ([install](https://kubescape.io/docs/install-cli/)) — runs locally
+- (kube-bench needs **no** local install — it runs in-cluster as a Job; see `scan/kube-bench-job.yaml`)
 - `ansible-core` 2.14+
 - SSH key + sudo access to all nodes (for Tier 2)
 
@@ -109,6 +110,19 @@ On a vanilla `kubeadm init` v1.29 cluster:
 | Baseline          | ~50%             | ~55%                |
 | After Tier 1      | ~70%             | ~75%                |
 | After Tier 2      | ~92%             | ~94%                |
+
+> **Note on Tier 1 in isolation:** most of what `kube-bench` checks is
+> node/control-plane configuration (CIS 1.x/4.x), which is **Tier 2** work.
+> Tier 1 alone (PSS/NetworkPolicy/Kyverno/RBAC) barely moves the `kube-bench`
+> number and can *lower* the `kubescape` number, because installing Kyverno
+> adds workloads that themselves fail some CIS workload controls. The big
+> jump comes from Tier 2. Run the full pipeline before judging the score.
+
+> **Testing on kind:** the orchestrator's `baseline`/`tier1`/`validate`
+> phases work against a `kind` cluster, but **Tier 2 cannot run on kind**:
+> it drives nodes over SSH and kind "nodes" are containers with no sshd.
+> Validate Tier 2 patch scripts by `docker exec`-ing them into the
+> `*-control-plane` container instead.
 
 The remaining 5-8% is **Tier 3 manual work** documented in `docs/TIER3-MANUAL.md`:
 

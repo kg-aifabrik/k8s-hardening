@@ -101,29 +101,42 @@ def run_kube_bench(outdir: Path) -> ScanResult:
     job_manifest = SCAN_DIR / "kube-bench-job.yaml"
     run(["kubectl", "apply", "-f", str(job_manifest)])
 
-    # wait for completion (timeout 5m)
+    # wait for the Job itself to complete (timeout 5m). Keying off the Job
+    # rather than items[0] avoids races with retried/backoff pods.
     deadline = time.time() + 300
-    pod = None
+    completed = False
     while time.time() < deadline:
         cp = run(
-            ["kubectl", "-n", "kube-bench-scan", "get", "pods",
-             "-l", "app=kube-bench", "-o", "jsonpath={.items[0].metadata.name}"],
+            ["kubectl", "-n", "kube-bench-scan", "get", "job", "kube-bench",
+             "-o", "jsonpath={.status.succeeded} {.status.failed}"],
             check=False, capture=True,
         )
-        if cp.returncode == 0 and cp.stdout.strip():
-            pod = cp.stdout.strip()
-            phase = run(
-                ["kubectl", "-n", "kube-bench-scan", "get", "pod", pod,
-                 "-o", "jsonpath={.status.phase}"],
-                check=False, capture=True,
-            ).stdout.strip()
-            if phase in ("Succeeded", "Failed"):
-                break
+        succeeded, _, failed = (cp.stdout.strip() + " ").partition(" ")
+        if succeeded.strip() not in ("", "0"):
+            completed = True
+            break
+        if failed.strip() not in ("", "0"):
+            log("kube-bench job reported a failed pod; collecting logs anyway",
+                "WARN")
+            completed = True
+            break
         time.sleep(5)
+
+    # Pick the most recently created pod for the Job (a succeeded one if any).
+    pod = run(
+        ["kubectl", "-n", "kube-bench-scan", "get", "pods",
+         "-l", "app=kube-bench",
+         "--sort-by=.metadata.creationTimestamp",
+         "-o", "jsonpath={.items[-1:].metadata.name}"],
+        check=False, capture=True,
+    ).stdout.strip()
 
     if not pod:
         log("kube-bench job never produced a pod", "ERROR")
         return ScanResult(tool="kube-bench")
+    if not completed:
+        log("kube-bench job did not complete within 300s; "
+            "results may be partial", "ERROR")
 
     raw = run(["kubectl", "-n", "kube-bench-scan", "logs", pod],
               capture=True).stdout
@@ -179,7 +192,7 @@ def run_kubescape(outdir: Path) -> ScanResult:
         summary = data.get("summaryDetails", {})
         controls = summary.get("controls", {})
         for cid, c in controls.items():
-            status = c.get("status", {}).get("status", "")
+            status = c.get("status", "")
             if status == "passed":
                 result.pass_count += 1
             elif status == "failed":
@@ -187,13 +200,19 @@ def run_kubescape(outdir: Path) -> ScanResult:
                 result.failures.append({
                     "id": cid,
                     "desc": c.get("name", ""),
-                    "remediation": c.get("complianceScore", ""),
+                    "remediation": (
+                        f"compliance {c.get('complianceScore', '?')}% - "
+                        f"see `kubescape scan control {cid}`"),
                 })
-            else:
+            else:  # skipped / irrelevant / etc.
                 result.warn_count += 1
-        if result.total:
+        # Prefer kubescape's own compliance score; fall back to pass ratio.
+        cs = summary.get("complianceScore")
+        if isinstance(cs, (int, float)):
+            result.score = round(cs, 1)
+        elif result.total:
             result.score = round(100 * result.pass_count / result.total, 1)
-    except (json.JSONDecodeError, KeyError) as e:
+    except (json.JSONDecodeError, KeyError, AttributeError, TypeError) as e:
         log(f"could not parse kubescape JSON: {e}", "WARN")
     return result
 
@@ -209,15 +228,19 @@ def phase_baseline(outdir: Path) -> dict[str, ScanResult]:
         "kubescape":  run_kubescape(outdir),
     }
     write_report(outdir / "baseline.md", "Baseline CIS Scan", results)
+    write_scores(outdir, results)
     return results
 
 
 def phase_tier1() -> None:
     log("=== PHASE: tier1 (cluster manifests) ===")
 
-    # Kyverno must be installed before its policies
+    # Kyverno must be installed before its policies.
+    # Server-side apply is required: the Kyverno CRDs exceed the 262144-byte
+    # limit on the client-side last-applied-configuration annotation.
     log("installing Kyverno...")
-    run(["kubectl", "apply", "-f", KYVERNO_INSTALL_URL])
+    run(["kubectl", "apply", "--server-side", "--force-conflicts",
+         "-f", KYVERNO_INSTALL_URL])
     log("waiting for Kyverno to be ready...")
     run(["kubectl", "-n", "kyverno", "wait", "--for=condition=Available",
          "deployment", "--all", "--timeout=300s"])
@@ -261,12 +284,37 @@ def phase_validate(baseline_dir: Path, outdir: Path) -> None:
     }
     write_report(outdir / "post-hardening.md",
                  "Post-Hardening CIS Scan", results)
+    write_scores(outdir, results)
     write_diff(baseline_dir, outdir, results)
 
 
 # ---------------------------------------------------------------------------
 # reporting
 # ---------------------------------------------------------------------------
+
+def write_scores(outdir: Path, results: dict[str, ScanResult]) -> None:
+    """Persist a small machine-readable summary so validate can diff later."""
+    scores = {
+        name: {
+            "score": r.score,
+            "pass": r.pass_count,
+            "fail": r.fail_count,
+            "warn": r.warn_count,
+        }
+        for name, r in results.items()
+    }
+    (outdir / "scores.json").write_text(json.dumps(scores, indent=2))
+
+
+def read_scores(report_dir: Path) -> dict[str, dict]:
+    f = report_dir / "scores.json"
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text())
+    except json.JSONDecodeError:
+        return {}
+
 
 def write_report(path: Path, title: str, results: dict[str, ScanResult]) -> None:
     lines = [f"# {title}", "",
@@ -296,20 +344,26 @@ def write_diff(baseline_dir: Path, post_dir: Path,
     baseline_report = baseline_dir / "baseline.md"
     post_report = post_dir / "post-hardening.md"
     out = post_dir / "delta.md"
+    baseline_scores = read_scores(baseline_dir)
+    if not baseline_scores:
+        log(f"no scores.json in {baseline_dir}; delta will show baseline as N/A",
+            "WARN")
     lines = ["# Hardening Delta", "",
              f"Baseline: {baseline_report}",
              f"Post:     {post_report}", "",
              "| Tool | Score Before | Score After | Delta |",
              "|------|--------------|-------------|-------|"]
-    # parse baseline scores from JSON sidecars if present
     for name, r_post in post_results.items():
-        before = "?"
-        bjson = baseline_dir / f"{name}.json"
-        if bjson.exists():
-            # the score isn't stored, so approximate by re-scanning the file
-            # quick & dirty: just leave "?" and rely on reports for truth
-            pass
-        lines.append(f"| {name} | {before} | {r_post.score}% | - |")
+        b = baseline_scores.get(name)
+        if b is not None:
+            before = f"{b['score']}%"
+            delta = round(r_post.score - b["score"], 1)
+            delta_str = f"{'+' if delta >= 0 else ''}{delta} pts"
+        else:
+            before = "N/A"
+            delta_str = "-"
+        lines.append(
+            f"| {name} | {before} | {r_post.score}% | {delta_str} |")
     out.write_text("\n".join(lines))
     log(f"wrote {out}")
 

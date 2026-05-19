@@ -20,7 +20,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: [kube-system, kyverno]
+              namespaces: [kube-system, kyverno, kube-bench-scan]
       validate:
         message: "CPU and memory limits are required."
         pattern:

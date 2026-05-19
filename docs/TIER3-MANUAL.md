@@ -61,6 +61,21 @@ spec:
                       -----END PUBLIC KEY-----
 ```
 
+## 3b. EventRateLimit admission plugin
+
+`patch_apiserver.py` enables `NodeRestriction,AlwaysPullImages` but
+deliberately omits `EventRateLimit`. That plugin requires:
+
+1. An `AdmissionConfiguration` file with an `EventRateLimit` section, and
+   `--admission-control-config-file` pointing at it.
+2. A hostPath volume + volumeMount added to the kube-apiserver static pod
+   so the container can read that file (the patch script only edits flags,
+   not volumes — same caveat applies to `--audit-policy-file`).
+
+Enabling the plugin without (1) makes kube-apiserver crash-loop. Once you
+add the config file and mounts, append `EventRateLimit` to
+`--enable-admission-plugins` in `CIS_FLAGS` and re-run `./harden.py tier2`.
+
 ## 4. Certificate rotation cadence
 
 kubeadm certs expire annually. Set a calendar reminder + runbook:
