@@ -1,5 +1,15 @@
-# Reports are generated, not source
-reports/
+# Reports are generated, not source — except curated samples under
+# reports/samples/, which we keep in version control as reference
+# output. Raw scanner JSONs are still ignored even there (multi-MB
+# blobs that bloat the repo).
+#
+# Pattern note: `reports/*` (not `reports/`) ignores everything
+# directly under reports/ without blanket-excluding the directory,
+# which lets us re-include reports/samples/ on the next line.
+reports/*
+!reports/samples/
+reports/samples/**/kube-bench.json
+reports/samples/**/kubescape.json
 
 # Real inventory (template only is checked in)
 tier2-ansible/inventory/hosts.ini

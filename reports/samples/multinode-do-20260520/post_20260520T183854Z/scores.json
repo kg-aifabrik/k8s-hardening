@@ -1,0 +1,14 @@
+{
+  "kube-bench": {
+    "score": 68.9,
+    "pass": 84,
+    "fail": 4,
+    "warn": 34
+  },
+  "kubescape": {
+    "score": 50.2,
+    "pass": 48,
+    "fail": 27,
+    "warn": 54
+  }
+}

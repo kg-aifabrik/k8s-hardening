@@ -80,6 +80,10 @@ is a DaemonSet that hits every node, and the aggregator dedupes
 node-level checks across pods — see [`scan/kube-bench-job.yaml`](scan/kube-bench-job.yaml)
 and `run_kube_bench` in [`harden.py`](harden.py).
 
+Sample report output from the 3-node DigitalOcean run is committed
+under [`reports/samples/`](reports/samples/) so you can see the
+shape of the framework's output without running it.
+
 > **Tier 1 in isolation looks worse, not better.** Most of what
 > `kube-bench` checks is node/control-plane configuration (CIS 1.x/4.x),
 > which is **Tier 2** work. Tier 1 alone (PSS/NetworkPolicy/Kyverno/RBAC)
