@@ -1,6 +1,12 @@
-# kube-bench Job manifest
-# Runs the Aqua kube-bench scanner against the cluster nodes.
-# Output is captured via 'kubectl logs' by the orchestrator.
+# kube-bench scanner - DaemonSet so every node (control plane + workers)
+# is scanned. A Job won't suffice: master/etcd/controlplane CIS controls
+# are only detectable when kube-bench runs ON the control-plane node, and
+# in a real cluster that node carries a NoSchedule taint that an
+# unprivileged Job won't tolerate.
+#
+# The container runs kube-bench once and then sleeps so `kubectl logs`
+# can pick up the complete JSON. The orchestrator polls each pod's logs
+# until they parse, then aggregates pass/fail/warn across all pods.
 #
 # Reference: https://github.com/aquasecurity/kube-bench
 ---
@@ -11,28 +17,37 @@ metadata:
   labels:
     pod-security.kubernetes.io/enforce: privileged  # kube-bench needs hostPath
 ---
-apiVersion: batch/v1
-kind: Job
+apiVersion: apps/v1
+kind: DaemonSet
 metadata:
   name: kube-bench
   namespace: kube-bench-scan
 spec:
-  ttlSecondsAfterFinished: 600
+  selector:
+    matchLabels:
+      app: kube-bench
   template:
     metadata:
       labels:
         app: kube-bench
     spec:
       hostPID: true
-      restartPolicy: Never
+      # Tolerate everything so we land on tainted control-plane nodes too.
+      tolerations:
+        - operator: Exists
+      restartPolicy: Always
       containers:
         - name: kube-bench
           image: docker.io/aquasec/kube-bench:v0.10.4
           # No explicit --targets: kube-bench auto-detects which components
           # (master/controlplane/node/etcd/policies) are present on the host.
-          # "managedservices" is EKS/GKE-only and is invalid for cis-1.10 on
-          # a self-managed/kubeadm cluster.
-          args: ["run", "--json"]
+          command: ["sh", "-c"]
+          args:
+            - |
+              kube-bench run --json
+              # Keep the pod alive so logs remain retrievable. The
+              # orchestrator deletes the DaemonSet when it's done.
+              sleep 86400
           volumeMounts:
             - { name: var-lib-etcd,         mountPath: /var/lib/etcd,         readOnly: true }
             - { name: var-lib-kubelet,      mountPath: /var/lib/kubelet,      readOnly: true }

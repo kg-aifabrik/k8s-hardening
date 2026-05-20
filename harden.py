@@ -91,77 +91,118 @@ class ScanResult:
         return self.pass_count + self.fail_count + self.warn_count
 
 
+# kube-bench Control IDs that only apply to the control-plane node.
+# kube-bench numbers CIS sections 1..5: 1=Master (apiserver/kcm/scheduler),
+# 2=Etcd, 3=Control Plane Configuration, 4=Worker Node, 5=Policies.
+# When a worker pod runs these sections it just reports "file not found"
+# failures — we drop them so workers only contribute node + policies
+# coverage.
+_CP_ONLY_IDS = {"1", "2", "3"}
+
+
+def _is_control_plane_node(node_name: str) -> bool:
+    cp = run(
+        ["kubectl", "get", "node", node_name,
+         "-o", "jsonpath={.metadata.labels}"],
+        check=False, capture=True,
+    )
+    return "node-role.kubernetes.io/control-plane" in cp.stdout
+
+
 def run_kube_bench(outdir: Path) -> ScanResult:
     """
-    Runs kube-bench as a Kubernetes Job using the upstream manifest.
-    The job uploads its JSON output to a ConfigMap we then extract.
-    For a vanilla install we invoke the official 'job.yaml' which auto-detects.
+    Runs kube-bench as a DaemonSet so both control-plane and worker nodes
+    are scanned (a Job lands on one pod and misses master controls on a
+    real cluster where the CP carries a NoSchedule taint).
+
+    Per-pod JSON is collected and aggregated. Control sections that only
+    exist on the CP (master/etcd/controlplane) are only counted from the
+    CP pod; node/policies sections are counted from every pod.
     """
-    log("running kube-bench...")
+    log("running kube-bench (DaemonSet)...")
     job_manifest = SCAN_DIR / "kube-bench-job.yaml"
     run(["kubectl", "apply", "-f", str(job_manifest)])
 
-    # wait for the Job itself to complete (timeout 5m). Keying off the Job
-    # rather than items[0] avoids races with retried/backoff pods.
-    deadline = time.time() + 300
-    completed = False
-    while time.time() < deadline:
-        cp = run(
-            ["kubectl", "-n", "kube-bench-scan", "get", "job", "kube-bench",
-             "-o", "jsonpath={.status.succeeded} {.status.failed}"],
-            check=False, capture=True,
-        )
-        succeeded, _, failed = (cp.stdout.strip() + " ").partition(" ")
-        if succeeded.strip() not in ("", "0"):
-            completed = True
-            break
-        if failed.strip() not in ("", "0"):
-            log("kube-bench job reported a failed pod; collecting logs anyway",
-                "WARN")
-            completed = True
-            break
-        time.sleep(5)
+    # Wait for the DaemonSet to roll out across all nodes.
+    run(["kubectl", "-n", "kube-bench-scan", "rollout", "status",
+         "ds/kube-bench", "--timeout=300s"], check=False)
 
-    # Pick the most recently created pod for the Job (a succeeded one if any).
-    pod = run(
+    # Enumerate pods with their node names.
+    cp = run(
         ["kubectl", "-n", "kube-bench-scan", "get", "pods",
-         "-l", "app=kube-bench",
-         "--sort-by=.metadata.creationTimestamp",
-         "-o", "jsonpath={.items[-1:].metadata.name}"],
+         "-l", "app=kube-bench", "-o", "json"],
         check=False, capture=True,
-    ).stdout.strip()
-
-    if not pod:
-        log("kube-bench job never produced a pod", "ERROR")
-        return ScanResult(tool="kube-bench")
-    if not completed:
-        log("kube-bench job did not complete within 300s; "
-            "results may be partial", "ERROR")
-
-    raw = run(["kubectl", "-n", "kube-bench-scan", "logs", pod],
-              capture=True).stdout
-    raw_path = outdir / "kube-bench.json"
-    raw_path.write_text(raw)
-
-    result = ScanResult(tool="kube-bench", raw_path=raw_path)
+    )
     try:
-        data = json.loads(raw)
+        items = json.loads(cp.stdout).get("items", [])
+    except json.JSONDecodeError:
+        items = []
+    pods = [(it["metadata"]["name"], it["spec"].get("nodeName", ""))
+            for it in items]
+    if not pods:
+        log("kube-bench DaemonSet produced no pods", "ERROR")
+        return ScanResult(tool="kube-bench")
+
+    result = ScanResult(tool="kube-bench")
+    seen = set()  # (test_id, scope) so we don't double-count node checks
+    per_pod_raw: dict[str, dict] = {}
+
+    for pod_name, node_name in pods:
+        # Poll until the kube-bench JSON parses (it emits a single object,
+        # then `sleep 86400` keeps the pod alive).
+        deadline = time.time() + 300
+        data = None
+        while time.time() < deadline:
+            raw = run(["kubectl", "-n", "kube-bench-scan", "logs", pod_name],
+                      check=False, capture=True).stdout
+            try:
+                data = json.loads(raw)
+                break
+            except json.JSONDecodeError:
+                time.sleep(5)
+        if data is None:
+            log(f"pod {pod_name} on {node_name} never produced parseable JSON",
+                "WARN")
+            continue
+        per_pod_raw[pod_name] = {"node": node_name, "data": data}
+
+        is_cp = _is_control_plane_node(node_name)
         for ctrl in data.get("Controls", []):
-            result.pass_count += ctrl.get("total_pass", 0)
-            result.fail_count += ctrl.get("total_fail", 0)
-            result.warn_count += ctrl.get("total_warn", 0)
+            cid = str(ctrl.get("id") or "")
+            cp_only = cid in _CP_ONLY_IDS
+            if cp_only and not is_cp:
+                # Worker can't see CP files; skip the empty/failing section.
+                continue
             for test in ctrl.get("tests", []):
                 for r in test.get("results", []):
-                    if r.get("status") == "FAIL":
+                    test_id = r.get("test_number", "")
+                    # Node + policies checks repeat across pods; dedupe to
+                    # the first occurrence.
+                    if not cp_only:
+                        key = (test_id,)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                    status = r.get("status")
+                    if status == "PASS":
+                        result.pass_count += 1
+                    elif status == "FAIL":
+                        result.fail_count += 1
                         result.failures.append({
-                            "id": r.get("test_number"),
+                            "id": test_id,
                             "desc": r.get("test_desc"),
+                            "node": node_name,
                             "remediation": r.get("remediation", "").strip(),
                         })
-        if result.total:
-            result.score = round(100 * result.pass_count / result.total, 1)
-    except json.JSONDecodeError:
-        log("could not parse kube-bench JSON; leaving raw on disk", "WARN")
+                    elif status == "WARN":
+                        result.warn_count += 1
+
+    raw_path = outdir / "kube-bench.json"
+    raw_path.write_text(json.dumps(per_pod_raw, indent=2))
+    result.raw_path = raw_path
+
+    if result.total:
+        result.score = round(100 * result.pass_count / result.total, 1)
 
     # cleanup
     run(["kubectl", "delete", "-f", str(job_manifest), "--ignore-not-found"],
