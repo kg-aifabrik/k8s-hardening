@@ -25,6 +25,15 @@ fi
 NEW_HOSTNAME="$1"
 export DEBIAN_FRONTEND=noninteractive
 
+# Freshly-booted cloud VMs (DO, EC2, etc.) run cloud-init's
+# unattended-upgrades pass before they hand off to ordinary
+# package management. Racing it produces "Could not get lock
+# /var/lib/apt/lists/lock". Wait for cloud-init to finish.
+if command -v cloud-init >/dev/null 2>&1; then
+  echo "[0/6] Waiting for cloud-init to finish (up to 5 min)"
+  cloud-init status --wait --long >/dev/null 2>&1 || true
+fi
+
 echo "[1/6] Setting hostname to ${NEW_HOSTNAME}"
 hostnamectl set-hostname "${NEW_HOSTNAME}"
 if grep -q "127.0.1.1" /etc/hosts; then

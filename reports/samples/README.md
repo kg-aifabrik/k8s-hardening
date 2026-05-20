@@ -9,7 +9,8 @@ date.
 
 | Sample | Topology | k8s version | Date | Notes |
 |--------|----------|-------------|------|-------|
-| [`multinode-do-20260520/`](multinode-do-20260520/) | 1 CP + 2 workers on DigitalOcean (Premium AMD) | v1.29.15 | 2026-05-20 | Reference run that produced the numbers in the [README's "Observed scores" table](../../README.md). |
+| [`multinode-do-20260520/`](multinode-do-20260520/) | 1 CP + 2 workers on DigitalOcean (Premium AMD) | v1.29.15 | 2026-05-20 | First multi-node reference run. |
+| [`multinode-do-20260520-premium-intel/`](multinode-do-20260520-premium-intel/) | 1 CP + 2 workers on DigitalOcean (Premium Intel) | v1.29.15 | 2026-05-20 | Fresh-droplet end-to-end validation of `scripts/standalone-bootstrap.sh` after the five bug fixes. Same delta as the AMD run (+11.6 / +3.8). |
 
 ## What's included
 
