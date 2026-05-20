@@ -34,6 +34,25 @@ Detailed step-by-step instructions live in `docs/`:
 Reusable bootstrap scripts live in [`scripts/`](scripts/) — each
 setup guide walks through invoking them.
 
+## Agentic Mode
+
+If you'd rather hand the whole exercise to an autonomous coding
+agent (e.g., Claude Code), point it at
+[docs/AGENTIC-MODE.md](docs/AGENTIC-MODE.md). That doc is the
+agent's runbook: given either a DigitalOcean API token or an existing
+kubeconfig, the agent provisions or uses a cluster, runs the full
+pipeline, commits the resulting reports under
+[`reports/samples/`](reports/samples/), and tears down whatever it
+provisioned. Known failure modes (five real bugs from the May 2026
+validation sessions) are baked in as gotchas the agent shouldn't
+need to rediscover.
+
+Typical agent prompt:
+
+> *"Run the hardening test against my cluster. Token: `dop_v1_…`.
+> Budget under $1, tear everything down when done, and commit the
+> reports to git."*
+
 ## Usage
 
 The orchestrator entrypoint is the same across environments. Only the
@@ -134,6 +153,7 @@ The remaining 5-8% is **Tier 3 manual work** documented in
 ├── reports/                          # generated; gitignored
 └── docs/
     ├── ARCHITECTURE.md
+    ├── AGENTIC-MODE.md           # runbook for autonomous coding agents
     ├── SETUP-LIMA.md
     ├── SETUP-STANDALONE.md
     ├── SETUP-HYPERSCALER.md
