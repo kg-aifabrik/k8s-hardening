@@ -150,7 +150,7 @@ def run_kube_bench(outdir: Path) -> ScanResult:
     for pod_name, node_name in pods:
         # Poll until the kube-bench JSON parses (it emits a single object,
         # then `sleep 86400` keeps the pod alive).
-        deadline = time.time() + 300
+        deadline = time.time() + 600
         data = None
         while time.time() < deadline:
             raw = run(["kubectl", "-n", "kube-bench-scan", "logs", pod_name],
@@ -317,8 +317,30 @@ def phase_tier2(inventory: str, become_pass: Optional[str] = None) -> None:
     run(cmd, env=env)
 
 
+def wait_for_apiserver(timeout: int = 300) -> None:
+    """
+    Block until /healthz returns ok. Tier 2 patches static-pod manifests
+    on the control plane, which causes the kubelet to restart
+    kube-apiserver; the API briefly returns "connection refused" during
+    the window between old pod termination and new pod readiness.
+    Running validate immediately after Tier 2 reliably hit this race.
+    """
+    log("waiting for API server to become healthy...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        cp = run(["kubectl", "get", "--raw=/healthz"],
+                 check=False, capture=True)
+        if cp.returncode == 0 and "ok" in cp.stdout:
+            log("API server healthy")
+            return
+        time.sleep(5)
+    log(f"API server did not become healthy within {timeout}s; "
+        "proceeding anyway", "WARN")
+
+
 def phase_validate(baseline_dir: Path, outdir: Path) -> None:
     log("=== PHASE: validate ===")
+    wait_for_apiserver()
     results = {
         "kube-bench": run_kube_bench(outdir),
         "kubescape":  run_kubescape(outdir),
