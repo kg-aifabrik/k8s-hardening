@@ -52,46 +52,79 @@ SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15
 ssh_node() { ssh "${SSH_OPTS[@]}" "root@$1" "${@:2}"; }
 scp_to_node() { scp "${SSH_OPTS[@]}" "$1" "root@$2:$3"; }
 
+# Freshly-created cloud VMs often respond on TCP 22 with "connection
+# refused" for the first 30-60s while cloud-init runs and sshd starts.
+# Poll until each host actually answers an SSH command.
+wait_for_ssh() {
+  local ip="$1"
+  local deadline=$(( $(date +%s) + 300 ))
+  while [ $(date +%s) -lt $deadline ]; do
+    if ssh "${SSH_OPTS[@]}" -o BatchMode=yes "root@$ip" true 2>/dev/null; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "SSH never came up on $ip after 300s" >&2
+  return 1
+}
+
 step() { printf '\n==== %s ====\n' "$*"; }
 
-step "1/10 Verifying SSH to all 3 hosts"
+step "1/10 Waiting for SSH on all 3 hosts"
 for ip in "$CP_IP" "$W1_IP" "$W2_IP"; do
+  echo -n "  $ip ... "
+  wait_for_ssh "$ip" || exit 1
   ssh_node "$ip" "hostname && uname -m"
 done
 
 step "2/10 Running prep-node.sh on every host (parallel)"
-declare -A NAMES=([${CP_IP}]=cp [${W1_IP}]=w1 [${W2_IP}]=w2)
+# Pair each IP with its desired hostname. Two parallel arrays beat an
+# associative array here: bash treats dots in IP-shaped keys as
+# arithmetic operators and silently mangles the lookups.
+IPS=("$CP_IP" "$W1_IP" "$W2_IP")
+HOSTNAMES=(cp w1 w2)
 pids=()
-for ip in "$CP_IP" "$W1_IP" "$W2_IP"; do
+for i in 0 1 2; do
+  ip="${IPS[$i]}"
+  name="${HOSTNAMES[$i]}"
   (
     scp_to_node "$PREP_NODE_SH" "$ip" /tmp/prep-node.sh
-    ssh_node "$ip" "bash /tmp/prep-node.sh ${NAMES[$ip]}"
-  ) > "/tmp/prep-${NAMES[$ip]}.log" 2>&1 &
+    ssh_node "$ip" "bash /tmp/prep-node.sh ${name}"
+  ) > "/tmp/prep-${name}.log" 2>&1 &
   pids+=("$!")
 done
 fail=0
 for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
 if [[ $fail -ne 0 ]]; then
   echo "prep-node.sh failed on at least one host; logs in /tmp/prep-*.log" >&2
+  tail -20 /tmp/prep-cp.log /tmp/prep-w1.log /tmp/prep-w2.log >&2 2>/dev/null || true
   exit 1
 fi
 
 step "3/10 kubeadm init on cp ($CP_IP)"
-ssh_node "$CP_IP" "kubeadm init \
-  --pod-network-cidr=${K8S_POD_CIDR} \
-  --apiserver-advertise-address=${CP_IP} \
-  --apiserver-cert-extra-sans=${CP_IP}"
-
+if ssh_node "$CP_IP" "test -f /etc/kubernetes/admin.conf"; then
+  echo "  cp already initialized (admin.conf exists) — skipping kubeadm init"
+else
+  ssh_node "$CP_IP" "kubeadm init \
+    --pod-network-cidr=${K8S_POD_CIDR} \
+    --apiserver-advertise-address=${CP_IP} \
+    --apiserver-cert-extra-sans=${CP_IP}"
+fi
 ssh_node "$CP_IP" 'mkdir -p /root/.kube && cp -f /etc/kubernetes/admin.conf /root/.kube/config'
 
-step "4/10 Installing Flannel CNI"
+step "4/10 Installing Flannel CNI (kubectl apply is idempotent)"
 ssh_node "$CP_IP" "kubectl apply -f ${FLANNEL_URL}"
 
 step "5/10 Joining workers"
 JOIN_CMD=$(ssh_node "$CP_IP" "kubeadm token create --print-join-command")
 echo "Join command: $JOIN_CMD"
-ssh_node "$W1_IP" "$JOIN_CMD" &
-ssh_node "$W2_IP" "$JOIN_CMD" &
+for ip in "$W1_IP" "$W2_IP"; do
+  if ssh_node "$ip" "test -f /etc/kubernetes/kubelet.conf"; then
+    echo "  $ip already joined (kubelet.conf exists) — skipping"
+  else
+    ssh_node "$ip" "$JOIN_CMD" &
+  fi
+done
 wait
 
 step "6/10 Waiting for all 3 nodes Ready"

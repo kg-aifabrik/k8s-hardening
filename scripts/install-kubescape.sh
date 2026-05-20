@@ -21,8 +21,11 @@ fi
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-  VERSION=$(curl -sf https://api.github.com/repos/kubescape/kubescape/releases/latest \
-    | grep -m1 '"tag_name"' | cut -d'"' -f4)
+  # Two-step so `grep -m1` can't SIGPIPE the still-streaming curl:
+  # under `set -o pipefail` that turns the upstream EPIPE into a
+  # script-fatal exit 23.
+  RELEASE_JSON=$(curl -sf https://api.github.com/repos/kubescape/kubescape/releases/latest)
+  VERSION=$(printf '%s\n' "$RELEASE_JSON" | grep -m1 '"tag_name"' | cut -d'"' -f4)
   echo "Resolved latest version: ${VERSION}"
 fi
 

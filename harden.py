@@ -338,9 +338,27 @@ def wait_for_apiserver(timeout: int = 300) -> None:
         "proceeding anyway", "WARN")
 
 
+def wait_for_kyverno(timeout: int = 300) -> None:
+    """
+    If Kyverno is installed, wait until its admission Deployment is
+    Available. Otherwise validate's `kubectl apply` of the kube-bench
+    DaemonSet fails with "failed calling webhook ... connection refused"
+    because the kube-apiserver came back faster than Kyverno's pods.
+    Skips silently when the `kyverno` namespace doesn't exist.
+    """
+    cp = run(["kubectl", "get", "ns", "kyverno"], check=False, capture=True)
+    if cp.returncode != 0:
+        return  # Kyverno not installed (e.g., --skip-tier2 path on a fresh cluster)
+    log("waiting for Kyverno admission webhook to become ready...")
+    run(["kubectl", "-n", "kyverno", "wait", "--for=condition=Available",
+         "deployment/kyverno-admission-controller",
+         f"--timeout={timeout}s"], check=False)
+
+
 def phase_validate(baseline_dir: Path, outdir: Path) -> None:
     log("=== PHASE: validate ===")
     wait_for_apiserver()
+    wait_for_kyverno()
     results = {
         "kube-bench": run_kube_bench(outdir),
         "kubescape":  run_kubescape(outdir),
