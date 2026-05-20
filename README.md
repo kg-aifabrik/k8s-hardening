@@ -31,6 +31,9 @@ Detailed step-by-step instructions live in `docs/`:
 - [docs/SETUP-STANDALONE.md](docs/SETUP-STANDALONE.md) — self-managed kubeadm, multi-node (DigitalOcean worked example, plus notes on Hetzner / OCI / EC2 / on-prem)
 - [docs/SETUP-HYPERSCALER.md](docs/SETUP-HYPERSCALER.md) — Amazon EKS and Google GKE: what works, what doesn't, and the provider-specific controls beyond CIS
 
+Reusable bootstrap scripts live in [`scripts/`](scripts/) — each
+setup guide walks through invoking them.
+
 ## Usage
 
 The orchestrator entrypoint is the same across environments. Only the
@@ -119,6 +122,11 @@ The remaining 5-8% is **Tier 3 manual work** documented in
 │       ├── scheduler/     # CIS 1.4.x
 │       ├── etcd/          # CIS 1.5 + 2.x + encryption-at-rest
 │       └── kubelet/       # CIS 4.2.x
+├── scripts/                          # reusable setup/teardown scripts
+│   ├── prep-node.sh                  # bootstrap a Ubuntu node for kubeadm
+│   ├── install-kubescape.sh          # arch-detecting kubescape CLI installer
+│   ├── lima-up.sh / lima-down.sh     # Mac/Lima single-node lifecycle
+│   └── standalone-bootstrap.sh       # 1 CP + 2 worker kubeadm bootstrap
 ├── reports/                          # generated; gitignored
 └── docs/
     ├── ARCHITECTURE.md

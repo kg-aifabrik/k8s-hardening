@@ -47,6 +47,33 @@ a test run is well under $1.
 
 # Worked example: DigitalOcean (3 droplets)
 
+## Fast path (script-driven)
+
+After provisioning the 3 droplets in the DO console (steps 1–5 below
+remain manual — point-and-click), everything else collapses into one
+command:
+
+```bash
+CP_IP=159.89.121.229 \
+W1_IP=159.203.25.165 \
+W2_IP=138.197.144.40 \
+RUN_HARDEN=1 \
+  bash scripts/standalone-bootstrap.sh
+```
+
+That:
+- runs `prep-node.sh` on all 3 hosts in parallel,
+- `kubeadm init`s `cp` with the public IP in the cert SANs,
+- installs Flannel,
+- joins `w1`/`w2`,
+- sets up cp→workers SSH for Ansible,
+- installs `python3 ansible-core git` + the kubescape CLI on cp,
+- clones this repo on cp, writes a 3-host inventory, pings each host,
+- runs `./harden.py all` (only if `RUN_HARDEN=1`).
+
+The rest of this section walks through what the script does, in case
+you want to run it interactively or debug a failure.
+
 ## 1. Generate / locate your SSH public key
 
 On your workstation:
@@ -118,54 +145,14 @@ firewall rules (and that your workstation IP hasn't changed).
 
 ## 6. Bootstrap kubeadm on all 3 nodes
 
-Save this as `/tmp/prep-node.sh` on your workstation:
+The per-node prep is in [`scripts/prep-node.sh`](../scripts/prep-node.sh)
+— set hostname, kernel modules, sysctls, containerd, kubeadm/kubelet/
+kubectl v1.29. Ship and run it on each node:
 
 ```bash
-#!/bin/bash
-# Bootstrap a kubeadm v1.29 node on Ubuntu 22.04/24.04.
-# Args: $1 = new hostname (cp, w1, w2)
-set -euxo pipefail
-export DEBIAN_FRONTEND=noninteractive
-
-hostnamectl set-hostname "$1"
-sed -i "s/127.0.1.1.*/127.0.1.1 $1/" /etc/hosts || echo "127.0.1.1 $1" >> /etc/hosts
-
-modprobe overlay; modprobe br_netfilter
-cat >/etc/modules-load.d/k8s.conf <<EOF
-overlay
-br_netfilter
-EOF
-cat >/etc/sysctl.d/k8s.conf <<EOF
-net.bridge.bridge-nf-call-iptables  = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-net.ipv4.ip_forward                 = 1
-EOF
-sysctl --system
-
-swapoff -a; sed -i '/ swap / s/^/#/' /etc/fstab || true
-
-apt-get update -y
-apt-get install -y containerd apt-transport-https ca-certificates curl gpg
-mkdir -p /etc/containerd
-containerd config default > /etc/containerd/config.toml
-sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
-systemctl restart containerd
-systemctl enable containerd
-
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key \
-  | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' \
-  > /etc/apt/sources.list.d/kubernetes.list
-apt-get update -y
-apt-get install -y kubelet kubeadm kubectl
-apt-mark hold kubelet kubeadm kubectl
-```
-
-Ship it and run on each node:
-
-```bash
-for ip in $CP_IP $W1_IP $W2_IP; do scp /tmp/prep-node.sh root@$ip:/tmp/; done
+for ip in $CP_IP $W1_IP $W2_IP; do
+  scp scripts/prep-node.sh root@$ip:/tmp/
+done
 ssh root@$CP_IP "bash /tmp/prep-node.sh cp"
 ssh root@$W1_IP "bash /tmp/prep-node.sh w1"
 ssh root@$W2_IP "bash /tmp/prep-node.sh w2"
@@ -219,18 +206,15 @@ ssh root@$CP_IP "ssh -o StrictHostKeyChecking=accept-new root@$W1_IP hostname &&
 ## 9. Install the hardening toolchain on cp
 
 ```bash
-ssh root@$CP_IP 'apt-get install -y python3 python3-pip ansible-core git
-
-# kubescape (amd64 here; replace arm64 if needed)
-LATEST=$(curl -sf https://api.github.com/repos/kubescape/kubescape/releases/latest | grep -m1 tag_name | cut -d\" -f4)
-mkdir -p /root/.kubescape/bin
-curl -sfL "https://github.com/kubescape/kubescape/releases/download/${LATEST}/kubescape_${LATEST#v}_linux_amd64.tar.gz" \
-  | tar -xz -C /root/.kubescape/bin/ kubescape
-ln -sf /root/.kubescape/bin/kubescape /usr/local/bin/kubescape
-
-git clone https://github.com/kg-aifabrik/k8s-hardening.git
-'
+ssh root@$CP_IP 'DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip ansible-core git'
+scp scripts/install-kubescape.sh root@$CP_IP:/tmp/
+ssh root@$CP_IP 'bash /tmp/install-kubescape.sh'
+ssh root@$CP_IP 'git clone https://github.com/kg-aifabrik/k8s-hardening.git /root/k8s-hardening'
 ```
+
+[`install-kubescape.sh`](../scripts/install-kubescape.sh) auto-detects
+OS + arch so the same script works on x86_64 droplets, arm64 droplets,
+and your macOS workstation.
 
 ## 10. Write the inventory and run
 

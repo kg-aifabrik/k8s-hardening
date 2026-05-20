@@ -38,6 +38,28 @@ conclusions about a real environment.
 - macOS (Apple Silicon or Intel)
 - Homebrew
 
+## Fast path (script-driven)
+
+If you just want to run the framework and don't care about the
+underlying steps, use the wrapper script:
+
+```bash
+brew install lima
+
+# Provision + bootstrap (does NOT run harden.py)
+bash scripts/lima-up.sh
+
+# Or: provision + bootstrap + run the full pipeline
+RUN_HARDEN=1 bash scripts/lima-up.sh
+
+# When you're done:
+bash scripts/lima-down.sh
+```
+
+That collapses everything in the rest of this document into two
+commands. The sections below walk through what `lima-up.sh` actually
+does, in case you need to debug or customize.
+
 ## 1. Install Lima
 
 ```bash
