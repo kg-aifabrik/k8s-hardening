@@ -15,26 +15,26 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: workload-verify
+  name: __JOB_NAME__
   namespace: __NS__
 automountServiceAccountToken: false
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: workload-verify
+  name: __JOB_NAME__
   namespace: __NS__
   labels:
-    app: workload-verify
+    app: __JOB_NAME__
 spec:
   ttlSecondsAfterFinished: 600
   backoffLimit: 0
   template:
     metadata:
       labels:
-        app: workload-verify
+        app: __JOB_NAME__
     spec:
-      serviceAccountName: workload-verify
+      serviceAccountName: __JOB_NAME__
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true

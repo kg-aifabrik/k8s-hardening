@@ -383,19 +383,62 @@ def wait_for_apiserver(timeout: int = 300) -> None:
 
 def wait_for_kyverno(timeout: int = 300) -> None:
     """
-    If Kyverno is installed, wait until its admission Deployment is
-    Available. Otherwise validate's `kubectl apply` of the kube-bench
-    DaemonSet fails with "failed calling webhook ... connection refused"
-    because the kube-apiserver came back faster than Kyverno's pods.
-    Skips silently when the `kyverno` namespace doesn't exist.
+    If Kyverno is installed, wait until its admission webhook is
+    actually serving — not just until the Deployment reports
+    Available. Three signals, in order:
+
+      1. Deployment kyverno-admission-controller Available.
+      2. Service kyverno-svc endpoints have ≥1 ready address.
+      3. A `kubectl apply --dry-run=server` of a no-op ConfigMap
+         actually returns 0 (probes the webhook end-to-end).
+
+    Without all three, the next kubectl apply / delete on a
+    Kyverno-validated resource can race the Service endpoints
+    populating and fail with `failed calling webhook ...
+    connection refused`. We observed exactly this transient
+    after Tier 2 restarts the kubelet / apiserver.
     """
     cp = run(["kubectl", "get", "ns", "kyverno"], check=False, capture=True)
     if cp.returncode != 0:
-        return  # Kyverno not installed (e.g., --skip-tier2 path on a fresh cluster)
-    log("waiting for Kyverno admission webhook to become ready...")
+        return  # Kyverno not installed (managed K8s --skip-tier2 path)
+    log("waiting for Kyverno admission Deployment Available...")
     run(["kubectl", "-n", "kyverno", "wait", "--for=condition=Available",
          "deployment/kyverno-admission-controller",
          f"--timeout={timeout}s"], check=False)
+
+    log("waiting for Kyverno Service endpoints...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        cp = run(["kubectl", "-n", "kyverno", "get", "endpoints",
+                  "kyverno-svc", "-o",
+                  "jsonpath={.subsets[0].addresses[0].ip}"],
+                 check=False, capture=True)
+        if cp.stdout.strip():
+            break
+        time.sleep(3)
+    else:
+        log("kyverno-svc never got an endpoint; proceeding anyway", "WARN")
+
+    log("probing Kyverno webhook with a dry-run ConfigMap apply...")
+    probe_yaml = (
+        "apiVersion: v1\n"
+        "kind: ConfigMap\n"
+        "metadata:\n"
+        "  name: kyverno-readiness-probe\n"
+        "  namespace: default\n"
+    )
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        proc = subprocess.Popen(
+            ["kubectl", "apply", "--dry-run=server", "-f", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        proc.communicate(probe_yaml)
+        if proc.returncode == 0:
+            log("Kyverno webhook is responsive")
+            return
+        time.sleep(5)
+    log("Kyverno webhook never came up; proceeding anyway", "WARN")
 
 
 def phase_validate(baseline_dir: Path, outdir: Path) -> None:
@@ -747,29 +790,37 @@ def phase_workload_verify(namespace: str, outdir: Path,
     Apply the L1+L2+L3 verify Job into `namespace`, wait for it to
     complete (or fail), collect logs into a per-namespace Markdown
     report. Returns True if all checks passed.
+
+    Each call uses a Job name suffixed with the (sanitized) label,
+    e.g. workload-verify-pre-hardening, workload-verify-post-
+    hardening-cp1. This makes the function safe to call multiple
+    times against the same namespace within the ttlSecondsAfterFinished
+    window — previously we'd see a stale Job's "Complete" condition
+    and report a false PASS.
     """
+    # Sanitize the label for use in a k8s resource name (RFC 1123).
+    job_suffix = re.sub(r'[^a-z0-9-]', '-', (label or "").lower()).strip("-")
+    job_name = f"workload-verify-{job_suffix}" if job_suffix else "workload-verify"
+
     log(f"=== PHASE: workload-verify {namespace} "
         f"{('(' + label + ')') if label else ''} ===")
 
     tmpl = WORKLOADS_DIR / "verify" / "verify-job.yaml.tmpl"
-    rendered = tmpl.read_text().replace("__NS__", namespace)
-
-    # Idempotent: nuke a prior Job so apply can recreate it cleanly.
-    run(["kubectl", "-n", namespace, "delete", "job",
-         "workload-verify", "--ignore-not-found"],
-        check=False)
+    rendered = (tmpl.read_text()
+                .replace("__NS__", namespace)
+                .replace("__JOB_NAME__", job_name))
     _kubectl_apply_stdin(rendered)
 
-    # Wait up to 10 minutes for completion (Job has its own
-    # `ttlSecondsAfterFinished: 600` so it disappears later).
+    # Wait up to 10 minutes for completion.
     cp = run(["kubectl", "-n", namespace, "wait",
-              "--for=condition=complete", "job/workload-verify",
+              "--for=condition=complete", f"job/{job_name}",
               "--timeout=600s"], check=False, capture=True)
     succeeded = (cp.returncode == 0)
 
-    # Collect logs regardless of outcome.
+    # Collect logs for this specific Job's pod — filter on job-name
+    # label so we never grab a sibling Job's logs.
     pods_cp = run(["kubectl", "-n", namespace, "get", "pods",
-                   "-l", "app=workload-verify", "-o",
+                   "-l", f"job-name={job_name}", "-o",
                    "jsonpath={.items[0].metadata.name}"],
                   check=False, capture=True)
     pod = pods_cp.stdout.strip()
