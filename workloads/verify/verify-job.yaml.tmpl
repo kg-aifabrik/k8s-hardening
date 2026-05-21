@@ -73,13 +73,20 @@ spec:
           command: ["bash", "-euo", "pipefail", "-c"]
           args:
             - |
-              # Install curl + redis-cli into a tmp sysroot. apk refuses
-              # to --initdb as non-root unless --usermode is set ("Use
-              # --usermode to allow creating database as non-root").
-              # We're uid 70 (postgres image's default) so we need it.
-              mkdir -p /tmp/sysroot
+              # Install curl + redis-cli into a tmp sysroot. Three apk
+              # gotchas when running non-root with a custom --root:
+              #   1. `--usermode` is required for --initdb as non-root.
+              #   2. The new sysroot has no /etc/apk/repositories — apk
+              #      doesn't know where to fetch from. Copy from the
+              #      host image (postgres:16-alpine IS alpine, so it
+              #      ships a usable /etc/apk/repositories).
+              #   3. Without /etc/apk/keys/ in the sysroot, apk rejects
+              #      every package as untrusted. Copy those too.
+              mkdir -p /tmp/sysroot/etc/apk
+              cp /etc/apk/repositories /tmp/sysroot/etc/apk/repositories
+              cp -r /etc/apk/keys /tmp/sysroot/etc/apk/keys
               apk --root /tmp/sysroot --usermode --no-cache --initdb \
-                  add curl redis ca-certificates 2>&1 | tail -3
+                  add curl redis ca-certificates 2>&1 | tail -5
               export PATH=/tmp/sysroot/usr/bin:/tmp/sysroot/usr/sbin:$PATH
 
               FAILED=0
