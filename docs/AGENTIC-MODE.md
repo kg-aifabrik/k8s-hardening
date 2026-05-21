@@ -26,8 +26,8 @@ Per-mission success rubric:
 | Mission | Success looks like |
 |---------|--------------------|
 | **A — Assess** | `reports/assess_<ts>/assessment.md` exists, lists pass/fail/warn per CIS control, with remediation. Cluster unchanged. |
-| **B — Harden existing** | `reports/post_<ts>/delta.md` shows kube-bench Δ ≥ +8 pts and kubescape Δ ≥ +2 pts (for standalone kubeadm; managed K8s deltas will be smaller because Tier 2 is skipped). All nodes Ready post-Tier 2. |
-| **C — Provision + harden** | Same as B, plus `reports/samples/<topology>-<YYYYMMDD>/` committed and **all** provisioned DO resources destroyed. |
+| **B — Harden existing** | `reports/post_<ts>/delta.md` shows kube-bench Δ ≥ +8 pts and kubescape Δ ≥ +2 pts (for standalone kubeadm; managed K8s deltas will be smaller because Tier 2 is skipped). All nodes Ready post-Tier 2. **Plus** workload-verify checkpoints CP1 and CP2 both PASS for every tenant — see Workload Validation Harness below. |
+| **C — Provision + harden** | Same as B, plus `reports/samples/<topology>-<YYYYMMDD>/` committed (including workload-verify reports) and **all** provisioned DO resources destroyed. |
 
 Universal constraints:
 
@@ -333,6 +333,67 @@ Don't bury it in a paragraph.
 
 ---
 
+## Workload Validation Harness (Missions B and C)
+
+Since [issue #1](https://github.com/AI-Fabrik/k8s-hardening/issues/1)
+landed, `./harden.py all` runs a mandatory workload-validation
+harness around the CIS pipeline. The agent doesn't need to invoke
+this manually — it's baked into `all` — but it's worth understanding
+what to expect in the output, especially when triaging failures.
+
+The pipeline order is documented in
+[issue #1](https://github.com/AI-Fabrik/k8s-hardening/issues/1) and
+in the rewritten `phase_all` of [`harden.py`](../harden.py). Two
+checkpoints:
+
+- **CP1 — Pre-existing tenant survives.** After Tier 1 + Tier 2,
+  re-runs the verify Job in `tenant-a`. If this fails it means the
+  hardening either evicted tenant pods, broke intra-cluster
+  networking (NetworkPolicy too strict), or made Kyverno admit a
+  pod template that was previously fine.
+- **CP2 — New tenants admit, harness deploys.** Creates `tenant-b`,
+  deploys the same 8 workloads under the now-active Kyverno policies,
+  adds a `background-job` to `tenant-a`. If CP2 fails on tenant-b,
+  the Kyverno policies are blocking legitimate tenant workloads. If
+  it fails on tenant-a's harness alone, an admission rule is racing.
+
+### Output artifacts
+
+Under `reports/workload_<ts>/`:
+
+- `workload-verify-tenant-a-pre-hardening.md`
+- `workload-verify-tenant-a-post-hardening-cp1.md`
+- `workload-verify-tenant-a-post-hardening-cp2.md`
+- `workload-verify-tenant-b-post-hardening-cp2.md`
+
+Each contains the in-pod log of the verify Job. Triage from there.
+
+### Failure-mode shortcuts
+
+| Symptom (in workload-verify-*.md) | Likely cause |
+|-----------------------------------|--------------|
+| `fail: web Service unreachable or non-200` | nginx-unprivileged image failed to start (most often: PSS restricted block on a security-context drift) |
+| `fail: db round-trip failed` | postgres pod still initializing — verify Job ran before db reached Ready. Re-run the verify phase manually: `./harden.py workload-verify --namespace tenant-a` |
+| `fail: queue-worker has not pushed anything` | queue-worker can't reach cache; check cache pod status + NetworkPolicy default-deny may need a tenant-internal allow rule |
+| `fail: cron-pinger has not recorded a success yet` | CronJob hasn't fired yet (it runs every 1 min) — wait, or check whether the policy-exception is admitting the cron pod |
+| tenant-b deploy fails with `denied by` ... | Kyverno policy refused — read the message; we may need to add the workload pattern to an exception |
+
+### Adding a workload
+
+If the user requests adding a new workload to the harness:
+
+1. Drop the YAML under the appropriate path (`workloads/tenant/v1/`
+   for a tenant workload, etc.). Match the security-context shape of
+   existing files — failure will be in Kyverno admission, not in the
+   container itself.
+2. If verification is needed, extend the `L3` section of
+   `workloads/verify/verify-job.yaml.tmpl` with a new check.
+3. Run `./harden.py workload-deploy --kind tenant --version v1
+   --tenant tenant-a --kubeconfig reports/kubeconfig-tenant-a.yaml`
+   to test in isolation.
+
+---
+
 ## Known gotchas (don't waste cycles rediscovering)
 
 From the May 2026 validation sessions. The scripts already work
@@ -378,14 +439,16 @@ If you hit a **new** failure mode:
 3. kubescape: `<pass>/<fail>/<warn>` (`<score>%`)
 4. Report path: `reports/assess_<ts>/assessment.md`
 
-**Missions B and C (Harden):** 6-line summary.
+**Missions B and C (Harden):** 8-line summary.
 
 1. Cluster topology (e.g., 1 CP + 2 workers, kubeadm v1.29, DO Premium Intel)
 2. Baseline scores (kube-bench %, kubescape %)
 3. Post scores (kube-bench %, kubescape %)
 4. Delta (+X.X, +X.X)
-5. Reports committed at `reports/samples/...` (git SHA) — Mission C only
-6. Droplets torn down + token-revocation reminder to user — Mission C only
+5. Workload CP1 (pre-existing tenant survives): PASS / FAIL
+6. Workload CP2 (new tenant + harness): PASS / FAIL
+7. Reports committed at `reports/samples/...` (git SHA) — Mission C only
+8. Droplets torn down + token-revocation reminder to user — Mission C only
 
 If you can't produce all the lines for your mission, you're not done
 — finish or hand back to the human with a precise "I got to step N,

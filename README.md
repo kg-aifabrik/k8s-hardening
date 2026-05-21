@@ -108,6 +108,33 @@ Or run phases individually:
 Reports land under `reports/baseline_<ts>/` and `reports/post_<ts>/`.
 Read `reports/post_<ts>/delta.md` for the summary.
 
+## Workload validation harness
+
+`./harden.py all` does more than just scan-and-score. It deploys a
+representative set of admin and tenant workloads **before** hardening,
+applies Tier 1 + Tier 2, verifies the running workloads still
+function, then deploys a fresh wave (new tenant + a harness workload
+into the existing tenant) under the now-active policies, and verifies
+those come up too. See [issue #1](https://github.com/AI-Fabrik/k8s-hardening/issues/1)
+for the design and [docs/AGENTIC-MODE.md](docs/AGENTIC-MODE.md) for
+the agent runbook.
+
+Two checkpoints (CP1, CP2) are mandatory — they appear in
+`reports/workload_<ts>/` and the orchestrator's exit code reflects
+their pass/fail. The workload set:
+
+| Layer | Workloads |
+|-------|-----------|
+| Admin v1 (pre-hardening) | cert-manager, self-signed ClusterIssuer, metrics-server, node-debug DaemonSet |
+| Tenant v1 (deployed by tenant-deployer SA into `tenant-a`) | web (nginx-unprivileged), api (go-httpbin), db (postgres StatefulSet), cache (redis), queue-worker, cron-pinger CronJob, migration Job, Certificate CR |
+| Admin v2 (post-hardening, new namespace) | logging ns + Kyverno PolicyException + promtail-shape hostPath DaemonSet |
+| Tenant v1 again into `tenant-b` (post-hardening) | same 8 workloads, validating Kyverno still admits a new tenant |
+| Tenant harness (post-hardening, into existing tenant-a) | background-job Deployment |
+
+L1+L2+L3 verification runs as an in-cluster Job that exercises HTTP
+reachability, redis PING, a postgres write+read round-trip, and
+confirms the cron-pinger has fired at least once.
+
 ## Observed scores
 
 Scores from running this framework end-to-end on real kubeadm v1.29
@@ -115,10 +142,14 @@ clusters. The score formula is `pass / (pass + fail + warn) * 100` —
 i.e., kube-bench `WARN` results (mostly manual-review CIS items) count
 in the denominator. If you exclude warns you'll see higher numbers.
 
-| Topology                          | kube-bench (baseline → post) | kubescape (baseline → post) |
-|-----------------------------------|------------------------------|------------------------------|
-| Single node (Lima, untainted CP)  | 46.9% → 58.5% (+11.6)        | 46.4% → 50.2% (+3.8)         |
-| 3 nodes (DigitalOcean, tainted CP)| 56.6% → 68.9% (+12.3)        | 46.4% → 50.2% (+3.8)         |
+| Topology                          | kube-bench (baseline → post) | kubescape (baseline → post) | Workload CP1 | Workload CP2 |
+|-----------------------------------|------------------------------|------------------------------|--------------|--------------|
+| Single node (Lima, untainted CP)  | 46.9% → 58.5% (+11.6)        | 46.4% → 50.2% (+3.8)         | n/a *        | n/a *        |
+| 3 nodes (DigitalOcean, tainted CP)| 56.6% → 68.9% (+12.3)        | 46.4% → 50.2% (+3.8)         | n/a *        | n/a *        |
+
+\* Reference runs predate the workload-validation harness. The next
+end-to-end run on fresh droplets will populate CP1/CP2 columns;
+results land under [`reports/samples/`](reports/samples/).
 
 The kubescape delta is topology-independent (kubescape reads cluster
 state via the API). The kube-bench numbers differ because the scanner
@@ -177,6 +208,13 @@ The remaining 5-8% is **Tier 3 manual work** documented in
 │   ├── install-kubescape.sh          # arch-detecting kubescape CLI installer
 │   ├── lima-up.sh / lima-down.sh     # Mac/Lima single-node lifecycle
 │   └── standalone-bootstrap.sh       # 1 CP + 2 worker kubeadm bootstrap
+├── workloads/                        # workload-validation harness (issue #1)
+│   ├── admin/v1/                     # pre-hardening admin add-ons
+│   ├── admin/v2/                     # post-hardening admin add-ons
+│   ├── tenant/_rbac/                 # tenant namespace + SA + Role
+│   ├── tenant/v1/                    # 8 tenant workloads
+│   ├── tenant/harness/               # post-hardening test harness
+│   └── verify/                       # L1+L2+L3 verification Job template
 ├── reports/                          # generated; gitignored
 └── docs/
     ├── ARCHITECTURE.md
