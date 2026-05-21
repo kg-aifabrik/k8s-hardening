@@ -73,11 +73,12 @@ spec:
           command: ["bash", "-euo", "pipefail", "-c"]
           args:
             - |
-              # Install curl + redis-cli into a tmp sysroot so we don't
-              # need to write to /etc or /var/lib/apk on the (read-only)
-              # rootfs. The sysroot's binaries are then on PATH.
+              # Install curl + redis-cli into a tmp sysroot. apk refuses
+              # to --initdb as non-root unless --usermode is set ("Use
+              # --usermode to allow creating database as non-root").
+              # We're uid 70 (postgres image's default) so we need it.
               mkdir -p /tmp/sysroot
-              apk --root /tmp/sysroot --no-cache --initdb \
+              apk --root /tmp/sysroot --usermode --no-cache --initdb \
                   add curl redis ca-certificates 2>&1 | tail -3
               export PATH=/tmp/sysroot/usr/bin:/tmp/sysroot/usr/sbin:$PATH
 
