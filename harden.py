@@ -29,10 +29,24 @@ ROOT = Path(__file__).resolve().parent
 SCAN_DIR = ROOT / "scan"
 TIER1_DIR = ROOT / "tier1-manifests"
 TIER2_DIR = ROOT / "tier2-ansible"
+WORKLOADS_DIR = ROOT / "workloads"
 REPORT_DIR = ROOT / "reports"
 KYVERNO_VERSION = "v1.12.5"  # pinned; bump deliberately
 KYVERNO_INSTALL_URL = (
     f"https://github.com/kyverno/kyverno/releases/download/{KYVERNO_VERSION}/install.yaml"
+)
+# Pinned upstream URLs for admin v1 cluster add-ons. These are
+# upstream-published release manifests; vendoring them locally would
+# add thousands of lines to the repo with no benefit.
+CERT_MANAGER_VERSION = "v1.15.3"
+CERT_MANAGER_URL = (
+    f"https://github.com/cert-manager/cert-manager/releases/download/"
+    f"{CERT_MANAGER_VERSION}/cert-manager.yaml"
+)
+METRICS_SERVER_VERSION = "v0.7.2"
+METRICS_SERVER_URL = (
+    f"https://github.com/kubernetes-sigs/metrics-server/releases/download/"
+    f"{METRICS_SERVER_VERSION}/components.yaml"
 )
 
 
@@ -387,6 +401,228 @@ def phase_validate(baseline_dir: Path, outdir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# workload validation harness  (issue #1)
+# ---------------------------------------------------------------------------
+
+def _kubectl_apply_stdin(yaml_text: str, env: Optional[dict] = None) -> None:
+    """Apply rendered YAML to the cluster via `kubectl apply -f -`."""
+    log("$ kubectl apply -f -  (stdin: rendered template)", "EXEC")
+    full_env = {**os.environ, **(env or {})}
+    p = subprocess.Popen(["kubectl", "apply", "-f", "-"],
+                         stdin=subprocess.PIPE, text=True, env=full_env)
+    p.communicate(yaml_text)
+    if p.returncode != 0:
+        raise subprocess.CalledProcessError(p.returncode, "kubectl apply")
+
+
+def create_tenant(tenant: str, namespace: Optional[str] = None) -> Path:
+    """
+    Idempotently create a tenant boundary (namespace + ServiceAccount +
+    Role + RoleBinding + long-lived token Secret) and write a
+    kubeconfig file scoped to the tenant's deployer SA. Returns the
+    kubeconfig path.
+
+    Subsequent `kubectl` calls using `KUBECONFIG=<path>` then act as
+    the tenant — they can deploy into their namespace and nowhere else.
+    """
+    import base64
+    ns = namespace or tenant
+    log(f"creating tenant {tenant} (namespace {ns})...")
+
+    tmpl = WORKLOADS_DIR / "tenant" / "_rbac" / "tenant.yaml.tmpl"
+    rendered = (tmpl.read_text()
+                .replace("__NS__", ns)
+                .replace("__TENANT__", tenant))
+    _kubectl_apply_stdin(rendered)
+
+    # Wait for the SA token Secret to be populated by the
+    # token-controller (k8s 1.24+ requires the Secret to exist with the
+    # right annotation, then the controller fills in `token` + `ca.crt`).
+    deadline = time.time() + 120
+    token = ca_b64 = None
+    while time.time() < deadline:
+        cp = run(["kubectl", "-n", ns, "get", "secret",
+                  "tenant-deployer-token", "-o", "json"],
+                 check=False, capture=True)
+        if cp.returncode == 0:
+            data = json.loads(cp.stdout).get("data", {}) or {}
+            token_b64 = data.get("token", "")
+            ca_b64 = data.get("ca.crt", "")
+            if token_b64 and ca_b64:
+                token = base64.b64decode(token_b64).decode()
+                break
+        time.sleep(2)
+    if not token or not ca_b64:
+        raise RuntimeError(
+            f"tenant-deployer-token never populated in ns {ns}; "
+            "check that the token-controller is running")
+
+    server = run(["kubectl", "config", "view", "--minify",
+                  "-o", "jsonpath={.clusters[0].cluster.server}"],
+                 capture=True).stdout.strip()
+    if not server:
+        raise RuntimeError("could not read cluster server URL from "
+                           "the current kubeconfig")
+
+    REPORT_DIR.mkdir(exist_ok=True)
+    kubeconfig_path = REPORT_DIR / f"kubeconfig-{tenant}.yaml"
+    kubeconfig_path.write_text(
+        f"apiVersion: v1\n"
+        f"kind: Config\n"
+        f"clusters:\n"
+        f"  - name: cluster\n"
+        f"    cluster:\n"
+        f"      server: {server}\n"
+        f"      certificate-authority-data: {ca_b64}\n"
+        f"contexts:\n"
+        f"  - name: {tenant}\n"
+        f"    context:\n"
+        f"      cluster: cluster\n"
+        f"      namespace: {ns}\n"
+        f"      user: {tenant}-deployer\n"
+        f"current-context: {tenant}\n"
+        f"users:\n"
+        f"  - name: {tenant}-deployer\n"
+        f"    user:\n"
+        f"      token: {token}\n"
+    )
+    kubeconfig_path.chmod(0o600)
+    log(f"wrote tenant kubeconfig: {kubeconfig_path}")
+    return kubeconfig_path
+
+
+def phase_workload_deploy(kind: str, version: str,
+                          tenant: Optional[str] = None,
+                          kubeconfig: Optional[Path] = None) -> None:
+    """
+    Deploy a layer of workloads.
+      kind=admin,  version=v1     → cert-manager + ClusterIssuer +
+                                    metrics-server + node-debug DS
+      kind=admin,  version=v2     → logging ns + PolicyException +
+                                    promtail DS
+      kind=tenant, version=v1     → 8 tenant workloads (requires
+                                    --tenant + --kubeconfig)
+      kind=tenant, version=harness→ background-job (same requirements)
+    """
+    log(f"=== PHASE: workload-deploy {kind}/{version} "
+        f"{('tenant=' + tenant) if tenant else ''} ===")
+
+    if kind == "admin" and version == "v1":
+        # cert-manager: install the bundled manifest then wait for the
+        # admission webhook backend to come up. Until it's ready,
+        # subsequent ClusterIssuer/Certificate apply attempts will fail
+        # with "failed calling webhook".
+        log("installing cert-manager (~30s for CRDs + webhook)")
+        run(["kubectl", "apply", "-f", CERT_MANAGER_URL,
+             "--server-side", "--force-conflicts"])
+        run(["kubectl", "-n", "cert-manager", "wait",
+             "--for=condition=Available", "deployment", "--all",
+             "--timeout=300s"])
+
+        log("installing metrics-server")
+        # metrics-server requires the kubelet's serving cert to be
+        # signed by the cluster CA. On a vanilla kubeadm cluster the
+        # kubelet uses self-signed certs by default, so we patch in
+        # --kubelet-insecure-tls. Same patch as the upstream "HA"
+        # variant uses; safe on a single-CP kubeadm cluster.
+        run(["kubectl", "apply", "-f", METRICS_SERVER_URL])
+        run(["kubectl", "-n", "kube-system", "patch", "deployment",
+             "metrics-server", "--type", "json", "-p",
+             '[{"op":"add","path":"/spec/template/spec/containers/0/args/-",'
+             '"value":"--kubelet-insecure-tls"}]'], check=False)
+
+        # ClusterIssuer + node-debug DS — local YAML files.
+        for f in sorted((WORKLOADS_DIR / "admin" / "v1").glob("*.yaml")):
+            run(["kubectl", "apply", "-f", str(f)])
+
+    elif kind == "admin" and version == "v2":
+        for f in sorted((WORKLOADS_DIR / "admin" / "v2").glob("*.yaml")):
+            run(["kubectl", "apply", "-f", str(f)])
+
+    elif kind == "tenant":
+        if not tenant or not kubeconfig:
+            raise ValueError("tenant workloads need --tenant and --kubeconfig")
+        env = {"KUBECONFIG": str(kubeconfig)}
+        subdir = WORKLOADS_DIR / "tenant" / version
+        if not subdir.is_dir():
+            raise ValueError(
+                f"unknown tenant workload set: {version} "
+                f"(expected one of: v1, harness)")
+        for f in sorted(subdir.glob("*.yaml")):
+            run(["kubectl", "apply", "-f", str(f)], env=env)
+    else:
+        raise ValueError(f"unknown workload kind/version: {kind}/{version}")
+
+
+def wait_for_tenant_workloads(namespace: str,
+                              kubeconfig: Optional[Path] = None,
+                              timeout: int = 600) -> None:
+    """
+    Wait for every tenant workload's pods to report Ready. Uses the
+    tenant's kubeconfig so we exercise the actual auth path too.
+    """
+    log(f"waiting for tenant workloads in {namespace} to be Ready...")
+    env = {"KUBECONFIG": str(kubeconfig)} if kubeconfig else {}
+    # `kubectl wait` returns immediately for resources that don't
+    # exist yet; we list-then-wait per app label so the timeout
+    # actually applies to readiness, not to existence.
+    for app in ("web", "api", "db", "cache", "queue-worker"):
+        run(["kubectl", "-n", namespace, "wait", "--for=condition=Ready",
+             "pod", "-l", f"app={app}", f"--timeout={timeout}s"],
+            check=False, env=env)
+    # CronJob doesn't get a Ready pod until it fires — we don't block on it.
+
+
+def phase_workload_verify(namespace: str, outdir: Path,
+                          label: str = "") -> bool:
+    """
+    Apply the L1+L2+L3 verify Job into `namespace`, wait for it to
+    complete (or fail), collect logs into a per-namespace Markdown
+    report. Returns True if all checks passed.
+    """
+    log(f"=== PHASE: workload-verify {namespace} "
+        f"{('(' + label + ')') if label else ''} ===")
+
+    tmpl = WORKLOADS_DIR / "verify" / "verify-job.yaml.tmpl"
+    rendered = tmpl.read_text().replace("__NS__", namespace)
+
+    # Idempotent: nuke a prior Job so apply can recreate it cleanly.
+    run(["kubectl", "-n", namespace, "delete", "job",
+         "workload-verify", "--ignore-not-found"],
+        check=False)
+    _kubectl_apply_stdin(rendered)
+
+    # Wait up to 10 minutes for completion (Job has its own
+    # `ttlSecondsAfterFinished: 600` so it disappears later).
+    cp = run(["kubectl", "-n", namespace, "wait",
+              "--for=condition=complete", "job/workload-verify",
+              "--timeout=600s"], check=False, capture=True)
+    succeeded = (cp.returncode == 0)
+
+    # Collect logs regardless of outcome.
+    pods_cp = run(["kubectl", "-n", namespace, "get", "pods",
+                   "-l", "app=workload-verify", "-o",
+                   "jsonpath={.items[0].metadata.name}"],
+                  check=False, capture=True)
+    pod = pods_cp.stdout.strip()
+    job_logs = ""
+    if pod:
+        job_logs = run(["kubectl", "-n", namespace, "logs", pod],
+                       check=False, capture=True).stdout
+
+    suffix = f"-{label}" if label else ""
+    out = outdir / f"workload-verify-{namespace}{suffix}.md"
+    out.write_text(
+        f"# Workload Verify — {namespace}"
+        + (f" ({label})" if label else "")
+        + f"\n\nStatus: **{'PASS' if succeeded else 'FAIL'}**\n\n"
+        + f"## Job output\n\n```\n{job_logs.strip()}\n```\n"
+    )
+    log(f"wrote {out}  [{'PASS' if succeeded else 'FAIL'}]")
+    return succeeded
+
+
+# ---------------------------------------------------------------------------
 # reporting
 # ---------------------------------------------------------------------------
 
@@ -473,16 +709,30 @@ def write_diff(baseline_dir: Path, post_dir: Path,
 def main() -> int:
     p = argparse.ArgumentParser(description="k8s CIS hardening orchestrator")
     p.add_argument("phase", choices=["assess", "baseline", "tier1",
-                                     "tier2", "validate", "all"],
+                                     "tier2", "validate",
+                                     "create-tenant", "workload-deploy",
+                                     "workload-verify", "all"],
                    help=(
                        "assess = posture report only, no changes. "
                        "baseline = same scan but framed as the snapshot "
-                       "before tier1/tier2."))
+                       "before tier1/tier2. "
+                       "create-tenant = ns + SA + RBAC + kubeconfig. "
+                       "workload-deploy = deploy admin or tenant workloads. "
+                       "workload-verify = run L1+L2+L3 Job in a namespace."))
     p.add_argument("--inventory", default=str(TIER2_DIR / "inventory" / "hosts.ini"),
                    help="Ansible inventory for tier2")
     p.add_argument("--baseline-dir", help="for validate: path to baseline report dir")
     p.add_argument("--skip-tier2", action="store_true",
                    help="for 'all': skip node-level fixes")
+    p.add_argument("--tenant", help="tenant name (for create-tenant / "
+                                    "tenant workload-deploy)")
+    p.add_argument("--kind", choices=["admin", "tenant"],
+                   help="workload kind (for workload-deploy)")
+    p.add_argument("--version", help="workload version: v1, v2, or harness "
+                                     "(for workload-deploy)")
+    p.add_argument("--namespace", help="target namespace (for workload-verify)")
+    p.add_argument("--kubeconfig", help="kubeconfig file path (for tenant "
+                                        "workload-deploy)")
     args = p.parse_args()
 
     require(["kubectl"])
@@ -507,13 +757,106 @@ def main() -> int:
             return 2
         phase_validate(Path(args.baseline_dir),
                        timestamped_dir(REPORT_DIR, "post"))
+
+    elif args.phase == "create-tenant":
+        if not args.tenant:
+            log("--tenant required", "FATAL")
+            return 2
+        create_tenant(args.tenant)
+
+    elif args.phase == "workload-deploy":
+        if not args.kind or not args.version:
+            log("--kind and --version required", "FATAL")
+            return 2
+        kc = Path(args.kubeconfig) if args.kubeconfig else None
+        phase_workload_deploy(args.kind, args.version,
+                              tenant=args.tenant, kubeconfig=kc)
+
+    elif args.phase == "workload-verify":
+        if not args.namespace:
+            log("--namespace required", "FATAL")
+            return 2
+        ok = phase_workload_verify(args.namespace,
+                                   timestamped_dir(REPORT_DIR, "workload"))
+        return 0 if ok else 1
+
     elif args.phase == "all":
+        # Full 15-step pipeline from issue #1. Workload validation is
+        # mandatory; tearing it apart with flags would defeat the
+        # "prove hardening doesn't break real apps" promise.
         b = timestamped_dir(REPORT_DIR, "baseline")
+        w = timestamped_dir(REPORT_DIR, "workload")
+
+        # 1. Admin v1 (cert-manager, ClusterIssuer, metrics-server,
+        #    node-debug DS).
+        phase_workload_deploy("admin", "v1")
+
+        # 2. Tenant-a: create the boundary, deploy 8 workloads,
+        #    wait Ready.
+        ka = create_tenant("tenant-a")
+        phase_workload_deploy("tenant", "v1", tenant="tenant-a",
+                              kubeconfig=ka)
+        wait_for_tenant_workloads("tenant-a", kubeconfig=ka)
+
+        # 3. Pre-hardening verify — if this already fails, hardening
+        #    isn't the cause and we should stop.
+        if not phase_workload_verify("tenant-a", w, label="pre-hardening"):
+            log("pre-hardening verify failed; aborting before harden",
+                "FATAL")
+            return 2
+
+        # 4. Baseline scan.
         phase_baseline(b)
+
+        # 5. Tier 1.
         phase_tier1()
+
+        # 6. Tier 2 (unless --skip-tier2 on managed K8s).
         if not args.skip_tier2:
             phase_tier2(args.inventory)
+
+        # 7. Wait for the control plane + Kyverno after Tier 2.
+        wait_for_apiserver()
+        wait_for_kyverno()
+
+        # 8. CHECKPOINT 1: tenant-a workloads still healthy.
+        cp1 = phase_workload_verify("tenant-a", w,
+                                    label="post-hardening-cp1")
+
+        # 9. Admin v2 (logging ns + PolicyException + promtail DS).
+        phase_workload_deploy("admin", "v2")
+
+        # 10. Tenant-b: create boundary, deploy same 8 workloads under
+        #     the now-active Kyverno policies.
+        kb = create_tenant("tenant-b")
+        phase_workload_deploy("tenant", "v1", tenant="tenant-b",
+                              kubeconfig=kb)
+        wait_for_tenant_workloads("tenant-b", kubeconfig=kb)
+
+        # 11. Tenant-a harness: add background-job to existing tenant.
+        phase_workload_deploy("tenant", "harness", tenant="tenant-a",
+                              kubeconfig=ka)
+
+        # 12. CHECKPOINT 2: tenant-a (with harness), tenant-b.
+        cp2_a = phase_workload_verify("tenant-a", w,
+                                      label="post-hardening-cp2")
+        cp2_b = phase_workload_verify("tenant-b", w,
+                                      label="post-hardening-cp2")
+
+        # 13. CIS validate scan.
         phase_validate(b, timestamped_dir(REPORT_DIR, "post"))
+
+        # Final per-checkpoint summary log line so the orchestrator's
+        # final exit status reflects workload-validation health.
+        log(f"CHECKPOINT 1 (existing tenant survives hardening): "
+            f"{'PASS' if cp1 else 'FAIL'}")
+        log(f"CHECKPOINT 2 (new tenant + harness post-hardening): "
+            f"a={'PASS' if cp2_a else 'FAIL'} "
+            f"b={'PASS' if cp2_b else 'FAIL'}")
+        if not (cp1 and cp2_a and cp2_b):
+            log("one or more workload checkpoints FAILED — read "
+                "reports/workload_*/ for per-namespace logs", "ERROR")
+            return 1
 
     log("done.")
     return 0
