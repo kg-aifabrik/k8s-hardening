@@ -809,8 +809,13 @@ def phase_workload_verify(namespace: str, outdir: Path,
     and report a false PASS.
     """
     # Sanitize the label for use in a k8s resource name (RFC 1123).
-    job_suffix = re.sub(r'[^a-z0-9-]', '-', (label or "").lower()).strip("-")
-    job_name = f"workload-verify-{job_suffix}" if job_suffix else "workload-verify"
+    # When no label is provided (typical for the standalone CLI), fall
+    # back to a unix-timestamp suffix so back-to-back invocations
+    # against the same namespace don't reuse a stale Complete Job and
+    # report a false PASS from old logs.
+    effective_label = label or f"manual-{int(time.time())}"
+    job_suffix = re.sub(r'[^a-z0-9-]', '-', effective_label.lower()).strip("-")
+    job_name = f"workload-verify-{job_suffix}"
 
     log(f"=== PHASE: workload-verify {namespace} "
         f"{('(' + label + ')') if label else ''} ===")
@@ -963,6 +968,10 @@ def main() -> int:
     p.add_argument("--version", help="workload version: v1, v2, or harness "
                                      "(for workload-deploy)")
     p.add_argument("--namespace", help="target namespace (for workload-verify)")
+    p.add_argument("--label", default="",
+                   help="optional label for workload-verify (defaults to "
+                        "a unix-timestamp so back-to-back invocations "
+                        "don't reuse a stale Complete Job)")
     p.add_argument("--kubeconfig", help="kubeconfig file path (for tenant "
                                         "workload-deploy)")
     args = p.parse_args()
@@ -1013,7 +1022,8 @@ def main() -> int:
             log("--namespace required", "FATAL")
             return 2
         ok = phase_workload_verify(args.namespace,
-                                   timestamped_dir(REPORT_DIR, "workload"))
+                                   timestamped_dir(REPORT_DIR, "workload"),
+                                   label=args.label)
         return 0 if ok else 1
 
     elif args.phase == "check-images":
