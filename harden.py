@@ -17,9 +17,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -410,6 +413,125 @@ def phase_validate(baseline_dir: Path, outdir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# image-existence pre-flight  (lesson learned: Bitnami pulled all their
+# docker.io public tags in mid-2025 with no warning and silently broke
+# every pipeline that referenced bitnami/postgresql, bitnami/redis, etc.
+# We catch this class of breakage before deploying anything.)
+# ---------------------------------------------------------------------------
+
+_IMAGE_LINE = re.compile(r'^\s*image:\s*([^\s#]+)', re.MULTILINE)
+
+
+def _parse_image(ref: str) -> tuple[str, str, str]:
+    """Parse 'docker.io/library/redis:7-alpine' → (registry, repo, tag)."""
+    ref = ref.strip().strip('"\'')
+    if "/" in ref:
+        first, rest = ref.split("/", 1)
+        if "." in first or ":" in first or first == "localhost":
+            registry, repo_tag = first, rest
+        else:
+            registry, repo_tag = "docker.io", ref
+    else:
+        registry, repo_tag = "docker.io", "library/" + ref
+    if "@" in repo_tag:
+        repo, tag = repo_tag.split("@", 1)
+    elif ":" in repo_tag:
+        repo, tag = repo_tag.rsplit(":", 1)
+    else:
+        repo, tag = repo_tag, "latest"
+    if registry == "docker.io" and "/" not in repo:
+        repo = "library/" + repo
+    return registry, repo, tag
+
+
+def _check_image_exists(ref: str, timeout: int = 10) -> tuple[bool, str]:
+    """
+    Return (exists, message). Only validates docker.io for now since
+    that's where the kind of vendor-policy break we hit lives.
+    Non-docker.io refs are treated as OK with a 'skipped' note —
+    if you point at a private registry you're on the hook for it.
+    """
+    try:
+        registry, repo, tag = _parse_image(ref)
+    except Exception as e:
+        return False, f"parse error: {e}"
+    if registry != "docker.io":
+        return True, f"skipped (non-docker.io: {registry})"
+    url = f"https://hub.docker.com/v2/repositories/{repo}/tags/{tag}/"
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200, "ok"
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False, "404 not found (tag removed or repo deleted)"
+        return False, f"HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return False, f"network error: {e.reason}"
+    except Exception as e:
+        return False, f"unexpected: {e}"
+
+
+def _collect_image_refs() -> dict[str, list[Path]]:
+    """Walk workloads/ + scan/ for `image:` lines; return {ref: [paths]}."""
+    refs: dict[str, list[Path]] = {}
+    for d in (WORKLOADS_DIR, SCAN_DIR):
+        if not d.exists():
+            continue
+        for f in d.rglob("*"):
+            if not f.is_file() or f.suffix not in {".yaml", ".yml", ".tmpl"}:
+                continue
+            text = f.read_text()
+            for m in _IMAGE_LINE.finditer(text):
+                refs.setdefault(m.group(1), []).append(f)
+    return refs
+
+
+def phase_check_images() -> bool:
+    """
+    Verify every image referenced under workloads/ + scan/ still exists
+    in its registry. Returns True iff all are reachable.
+
+    Run this before the rest of `all`. A failure here means a vendor
+    pulled or renamed images and you'll waste 30 min deploying pods
+    that ImagePullBackOff. Fix the references, re-run.
+
+    For agents: see docs/AGENTIC-MODE.md "Image drift" — the expected
+    behavior is to attempt a fix and ask the user before committing.
+    """
+    log("=== PHASE: check-images ===")
+    refs = _collect_image_refs()
+    if not refs:
+        log("no image references found under workloads/ or scan/", "WARN")
+        return True
+    bad: list[tuple[str, list[Path], str]] = []
+    for ref in sorted(refs):
+        ok, msg = _check_image_exists(ref)
+        status = "OK" if ok else "FAIL"
+        log(f"  [{status}] {ref}  ({msg})")
+        if not ok:
+            bad.append((ref, refs[ref], msg))
+    if not bad:
+        log(f"all {len(refs)} image references resolved")
+        return True
+    log("=" * 60, "ERROR")
+    log(f"{len(bad)} image reference(s) are unreachable:", "ERROR")
+    for ref, sources, msg in bad:
+        log(f"  {ref}  ({msg})", "ERROR")
+        for s in sources:
+            try:
+                rel = s.relative_to(ROOT)
+            except ValueError:
+                rel = s
+            log(f"    in {rel}", "ERROR")
+    log("=" * 60, "ERROR")
+    log("Fix these references before running. If you're an agent, see "
+        "docs/AGENTIC-MODE.md 'Image drift' for the expected workflow.",
+        "ERROR")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # workload validation harness  (issue #1)
 # ---------------------------------------------------------------------------
 
@@ -757,14 +879,17 @@ def main() -> int:
     p.add_argument("phase", choices=["assess", "baseline", "tier1",
                                      "tier2", "validate",
                                      "create-tenant", "workload-deploy",
-                                     "workload-verify", "all"],
+                                     "workload-verify",
+                                     "check-images", "all"],
                    help=(
                        "assess = posture report only, no changes. "
                        "baseline = same scan but framed as the snapshot "
                        "before tier1/tier2. "
                        "create-tenant = ns + SA + RBAC + kubeconfig. "
                        "workload-deploy = deploy admin or tenant workloads. "
-                       "workload-verify = run L1+L2+L3 Job in a namespace."))
+                       "workload-verify = run L1+L2+L3 Job in a namespace. "
+                       "check-images = pre-flight: do referenced images "
+                       "still exist in their registries? (auto-runs in 'all')."))
     p.add_argument("--inventory", default=str(TIER2_DIR / "inventory" / "hosts.ini"),
                    help="Ansible inventory for tier2")
     p.add_argument("--baseline-dir", help="for validate: path to baseline report dir")
@@ -781,7 +906,11 @@ def main() -> int:
                                         "workload-deploy)")
     args = p.parse_args()
 
-    require(["kubectl"])
+    # check-images doesn't talk to a cluster, so skip the kubectl
+    # requirement (this lets users run the pre-flight from a vanilla
+    # workstation before they've even provisioned anything).
+    if args.phase != "check-images":
+        require(["kubectl"])
     if args.phase in ("assess", "baseline", "validate", "all"):
         require(["kubescape"])
     if args.phase in ("tier2", "all") and not args.skip_tier2:
@@ -826,10 +955,23 @@ def main() -> int:
                                    timestamped_dir(REPORT_DIR, "workload"))
         return 0 if ok else 1
 
+    elif args.phase == "check-images":
+        return 0 if phase_check_images() else 1
+
     elif args.phase == "all":
         # Full 15-step pipeline from issue #1. Workload validation is
         # mandatory; tearing it apart with flags would defeat the
         # "prove hardening doesn't break real apps" promise.
+
+        # 0. Pre-flight: verify every workload image still exists in
+        # its registry. Catches the Bitnami-removed-everything-overnight
+        # class of breakage before we waste 30 min deploying pods that
+        # will ImagePullBackOff.
+        if not phase_check_images():
+            log("image pre-flight failed; aborting before any deploys",
+                "FATAL")
+            return 2
+
         b = timestamped_dir(REPORT_DIR, "baseline")
         w = timestamped_dir(REPORT_DIR, "workload")
 

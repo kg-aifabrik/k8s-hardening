@@ -394,7 +394,52 @@ If the user requests adding a new workload to the harness:
 
 ---
 
-## Known gotchas (don't waste cycles rediscovering)
+## Image drift (pre-flight image-existence check)
+
+`./harden.py all` and `./harden.py check-images` both run an image
+pre-flight that queries Docker Hub for every `image:` line under
+`workloads/` and `scan/`. Image vendors quietly disappear (Bitnami
+pulled all their public docker.io tags in mid-2025 with no warning
+— see commit 746327c). If the pre-flight reports a 404, **don't run
+the rest of the pipeline** — you'll waste 30+ min deploying pods
+that crash on ImagePullBackOff.
+
+### Agent behavior on a 404
+
+When you're the agent and the pre-flight fails:
+
+1. For each missing image, find an officially-published alternative:
+   - Containers from vendors who left docker.io: check whether they
+     have a `bitnamilegacy/*` mirror, a Quay.io presence, or a paid
+     successor (we use official images upstream — `library/postgres`,
+     `library/redis` etc. — to avoid this entirely going forward).
+   - Image with a renamed tag: scan Docker Hub's tag list for a
+     close match (`postgres:16-alpine` → `postgres:16.2-alpine`).
+   - Image that moved registries: switch the prefix (`docker.io/foo/x`
+     → `ghcr.io/foo/x` if that's where they republished).
+2. Update the affected `workloads/**/*.yaml` files, adjusting env
+   vars / data paths / runAsUser to match the new image (these
+   often differ between vendors — e.g., Bitnami's postgres ran as
+   uid 1001 with `POSTGRESQL_*` env vars, official postgres runs as
+   uid 70 with `POSTGRES_*`).
+3. **Stop and ask the user before committing.** Show:
+   - the diff of YAML changes,
+   - the affected security-context / env-var adjustments,
+   - whether you've tested locally (likely not — pre-flight only
+     checks existence, not behavior),
+   - your confidence that the substitution is functionally
+     equivalent.
+4. On approval: commit with a focused message documenting the
+   vendor break, push, then re-run `./harden.py check-images` to
+   confirm, then `./harden.py all`.
+
+### Human behavior on a 404
+
+If you're not an agent, the failure message lists which files need
+edits. Either fix them by hand or pull the latest from `main` —
+maintenance commits often land within hours of a vendor disappearing.
+
+
 
 From the May 2026 validation sessions. The scripts already work
 around all five; this list is for diagnosing *new* environments
