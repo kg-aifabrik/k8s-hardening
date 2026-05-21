@@ -681,6 +681,13 @@ def phase_workload_deploy(kind: str, version: str,
     log(f"=== PHASE: workload-deploy {kind}/{version} "
         f"{('tenant=' + tenant) if tenant else ''} ===")
 
+    # Any apply that creates a Pod goes through Kyverno's admission
+    # webhook once Tier 1 has installed it. If we got here on the
+    # tail of a Tier-2 apiserver restart from a prior run, Kyverno's
+    # Service might briefly have no endpoints — wait until the
+    # webhook actually responds before applying anything.
+    wait_for_kyverno()
+
     if kind == "admin" and version == "v1":
         # local-path-provisioner: gives kubeadm clusters a working
         # default StorageClass so the db StatefulSet's PVC can bind.
