@@ -82,8 +82,9 @@ spec:
         - name: config
           configMap:
             name: web-config
-            items:
-              - { key: nginx.conf, path: default.conf }
+            # No `items:` selector — ConfigMap key `default.conf`
+            # projects as /etc/nginx/conf.d/default.conf, exactly the
+            # file the stock nginx-unprivileged config includes.
         - name: scratch
           emptyDir: {}
         - name: var-cache-nginx
