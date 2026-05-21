@@ -1,0 +1,74 @@
+# `cache` — Redis Deployment. In-memory, no persistence (emptyDir for
+# scratch). Used by queue-worker and cron-pinger as shared state.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache
+  labels: { app: cache }
+spec:
+  replicas: 1
+  # Single-replica Redis: we don't need HA for the workload test, and
+  # this lets emptyDir work cleanly (no need for a PVC).
+  strategy:
+    type: Recreate
+  selector: { matchLabels: { app: cache } }
+  template:
+    metadata:
+      labels: { app: cache }
+    spec:
+      serviceAccountName: workload-runtime
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: redis
+          image: docker.io/bitnami/redis:7.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "yes"
+            - name: REDIS_DISABLE_COMMANDS
+              value: "FLUSHDB,FLUSHALL"
+          ports:
+            - { containerPort: 6379, name: redis }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+          readinessProbe:
+            tcpSocket: { port: redis }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: redis }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data,    mountPath: /bitnami/redis }
+            - { name: scratch, mountPath: /tmp }
+            - { name: opt,     mountPath: /opt/bitnami/redis/tmp }
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: scratch
+          emptyDir: {}
+        - name: opt
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cache
+  labels: { app: cache }
+spec:
+  selector: { app: cache }
+  ports:
+    - { name: redis, port: 6379, targetPort: redis }

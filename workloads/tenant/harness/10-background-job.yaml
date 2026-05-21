@@ -1,0 +1,54 @@
+# `background-job` — post-hardening test harness. Deployed into an
+# already-existing tenant after Tier 1/2 are in force, to verify the
+# hardened cluster still admits new workloads from a running tenant.
+#
+# Functionally a sleep loop. The point is the admission, not the
+# behavior — does Kyverno still let a tenant deploy a Pod?
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: background-job
+  labels: { app: background-job }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: background-job } }
+  template:
+    metadata:
+      labels: { app: background-job }
+    spec:
+      serviceAccountName: workload-runtime
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bg
+          image: docker.io/library/busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              # No-op heartbeat. Logs once a minute so an operator
+              # tailing logs sees the pod is alive.
+              while true; do
+                echo "[$(date -u +%FT%TZ)] background-job alive"
+                sleep 60
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits:   { cpu: 20m, memory: 32Mi }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "true"] }
+            initialDelaySeconds: 2
+            periodSeconds: 30
+          livenessProbe:
+            exec: { command: ["sh", "-c", "true"] }
+            initialDelaySeconds: 30
+            periodSeconds: 60

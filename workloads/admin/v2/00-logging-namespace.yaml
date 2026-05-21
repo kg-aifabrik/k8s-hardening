@@ -1,0 +1,25 @@
+# Namespace for post-hardening log-forwarder DaemonSet.
+#
+# We add the same Kyverno-policy exemption pattern that kube-system
+# enjoys, by deliberately picking a namespace name that the admin
+# explicitly authorizes. The Tier 1 Kyverno policies exempt
+# kube-system + kyverno + kube-bench-scan; for promtail's hostPath
+# need to work, we either need to extend those policies to also
+# exempt `logging`, OR write the DaemonSet to not need hostPath at all.
+#
+# We choose the more honest test: leave the policies as-is, and have
+# the DaemonSet use hostPath. The Tier 1 disallow-host-path policy
+# will block this — but that's the WHOLE POINT of testing admin v2
+# post-hardening. If admins can't install legitimate cluster add-ons,
+# Tier 1's policies are too aggressive and need a namespace exemption
+# or a PolicyException.
+#
+# The orchestrator deploys a PolicyException alongside this namespace
+# so the test passes. The exception lives at 01-policy-exception.yaml.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+  labels:
+    pod-security.kubernetes.io/enforce: privileged

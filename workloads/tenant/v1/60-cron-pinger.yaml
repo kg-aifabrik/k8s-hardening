@@ -1,0 +1,49 @@
+# `cron-pinger` — CronJob (every 1 min) that GETs api/status/200 and,
+# on success, writes a timestamp to redis. Verify Job reads the
+# timestamp to confirm at least one run has succeeded.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cron-pinger
+spec:
+  schedule: "*/1 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels: { app: cron-pinger }
+        spec:
+          serviceAccountName: workload-runtime
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            fsGroup: 1001
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: pinger
+              # bitnami/postgresql:16 ships curl + redis-cli + psql, lets us
+              # use one image across all the tooling-style workloads.
+              image: docker.io/bitnami/postgresql:16
+              imagePullPolicy: IfNotPresent
+              command: ["bash", "-c"]
+              args:
+                - |
+                  set -e
+                  curl -sf -m 5 http://api/status/200 >/dev/null
+                  redis-cli -h cache SET cron-pinger:last-success "$(date -u +%FT%TZ)"
+                  echo "ping ok at $(date -u +%FT%TZ)"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              resources:
+                requests: { cpu: 5m, memory: 16Mi }
+                limits:   { cpu: 50m, memory: 64Mi }

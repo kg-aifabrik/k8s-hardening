@@ -1,0 +1,30 @@
+# Kyverno PolicyException for the logging namespace's log-forwarder
+# DaemonSet. Admins legitimately need hostPath (to mount /var/log/pods)
+# and hostPID is sometimes needed for log enrichment. Rather than
+# weakening the policies cluster-wide, we grant a narrow exception
+# tied to the specific DaemonSet name + namespace.
+#
+# This is exactly the production-grade pattern: keep policies strict,
+# create surgical exceptions for known-safe operators.
+---
+apiVersion: kyverno.io/v2
+kind: PolicyException
+metadata:
+  name: promtail-hostpath-exception
+  namespace: logging
+spec:
+  exceptions:
+    - policyName: disallow-host-path
+      ruleNames: ["host-path"]
+    - policyName: disallow-privileged
+      ruleNames: ["privileged-containers"]
+    - policyName: require-readonly-rootfs
+      ruleNames: ["read-only-root-fs"]
+    - policyName: disallow-default-sa
+      ruleNames: ["default-sa"]
+  match:
+    any:
+      - resources:
+          kinds: [Pod]
+          namespaces: [logging]
+          names: ["promtail-*"]

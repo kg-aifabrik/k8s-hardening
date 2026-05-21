@@ -1,0 +1,101 @@
+# `db` — PostgreSQL StatefulSet (1 replica). Stateful + persistent
+# storage + headless Service for pod DNS.
+#
+# Uses bitnami/postgresql which runs non-root by default (uid 1001) and
+# expects writable /bitnami/postgresql. PVC is mounted there via
+# volumeClaimTemplates.
+#
+# Password is in a Secret. The verify Job and migration Job both read
+# this Secret via env vars.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+type: Opaque
+stringData:
+  username: postgres
+  # Demo credential. Real deployments would use ExternalSecrets or
+  # vault-injected secrets; that's out of scope for the framework test.
+  password: not-a-real-password-please-change
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  labels: { app: db }
+spec:
+  # Headless Service so each pod gets stable DNS (db-0.db, db-1.db, …).
+  clusterIP: None
+  selector: { app: db }
+  ports:
+    - { name: postgres, port: 5432, targetPort: postgres }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+spec:
+  serviceName: db
+  replicas: 1
+  selector: { matchLabels: { app: db } }
+  template:
+    metadata:
+      labels: { app: db }
+    spec:
+      serviceAccountName: workload-runtime
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: docker.io/bitnami/postgresql:16
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 5432, name: postgres }
+          env:
+            - name: POSTGRESQL_USERNAME
+              valueFrom: { secretKeyRef: { name: db-credentials, key: username } }
+            - name: POSTGRESQL_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-credentials, key: password } }
+            - name: POSTGRESQL_DATABASE
+              value: postgres
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Bitnami's postgres image writes runtime state under /opt and
+            # needs /tmp; we keep the PVC for the data dir, scratch tmpfs
+            # for everything else.
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", "pg_isready -U postgres -h 127.0.0.1"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["bash", "-c", "pg_isready -U postgres -h 127.0.0.1"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - { name: data,    mountPath: /bitnami/postgresql }
+            - { name: scratch, mountPath: /tmp }
+            - { name: opt,     mountPath: /opt/bitnami/postgresql/tmp }
+      volumes:
+        - name: scratch
+          emptyDir: {}
+        - name: opt
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 1Gi }

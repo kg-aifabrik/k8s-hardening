@@ -1,0 +1,102 @@
+# `web` — stateless nginx reverse-proxy / static page.
+# Applied with `kubectl -n <tenant-ns> apply -f` so no metadata.namespace
+# fields here. Bare service names (`api`) resolve inside the tenant ns
+# via the default DNS search list.
+#
+# Uses nginxinc/nginx-unprivileged which listens on 8080 and runs as
+# uid 101 — Tier 1's runAsNonRoot policy blocks the stock nginx image
+# (which starts as root then drops).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+data:
+  # Just the server block — the image's stock /etc/nginx/nginx.conf
+  # already provides worker_processes / events / http and includes
+  # /etc/nginx/conf.d/*.conf inside the http block.
+  default.conf: |
+    # cluster DNS resolver for in-pod proxy_pass with bare service names.
+    resolver kube-dns.kube-system.svc.cluster.local valid=30s;
+    server {
+      listen 8080;
+      location / {
+        default_type text/plain;
+        return 200 "hello from web\n";
+      }
+      # L3 verify hits /api/get; we proxy to the api Service in the
+      # same namespace (DNS search list resolves bare "api").
+      location /api/ {
+        proxy_set_header Host $host;
+        proxy_pass http://api/;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels: { app: web }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      serviceAccountName: workload-runtime
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nginx
+          image: docker.io/nginxinc/nginx-unprivileged:1.27-alpine-slim
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 8080, name: http }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 100m, memory: 64Mi }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - { name: config, mountPath: /etc/nginx/conf.d, readOnly: true }
+            - { name: scratch, mountPath: /tmp }
+            - { name: var-cache-nginx, mountPath: /var/cache/nginx }
+            - { name: var-run-nginx,   mountPath: /var/run }
+      volumes:
+        - name: config
+          configMap:
+            name: web-config
+            items:
+              - { key: nginx.conf, path: default.conf }
+        - name: scratch
+          emptyDir: {}
+        - name: var-cache-nginx
+          emptyDir: {}
+        - name: var-run-nginx
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels: { app: web }
+spec:
+  selector: { app: web }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

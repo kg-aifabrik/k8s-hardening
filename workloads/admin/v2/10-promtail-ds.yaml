@@ -1,0 +1,63 @@
+# `promtail`-shape log-forwarder DaemonSet. Tails /var/log/pods/ on
+# every node and prints to stdout (we don't actually run a Loki —
+# this is a structural test: can the cluster still admit a hostPath
+# DaemonSet from an admin post-hardening?).
+#
+# The PolicyException in 01-policy-exception.yaml authorizes this
+# DaemonSet specifically to bypass disallow-host-path,
+# disallow-privileged (we don't actually need privileged but the
+# exception is broad in case the next iteration of this image does),
+# require-readonly-rootfs, and disallow-default-sa.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: logging
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: logging
+  labels: { app: promtail }
+spec:
+  selector: { matchLabels: { app: promtail } }
+  template:
+    metadata:
+      labels: { app: promtail }
+    spec:
+      serviceAccountName: promtail
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: tail
+          image: docker.io/library/busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Real promtail would tail all pod logs and ship them; we
+              # just `ls` the dir periodically to prove read access.
+              while true; do
+                echo "[$(date -u +%FT%TZ)] pods on $(hostname):"
+                ls /var/log/pods/ 2>/dev/null | head -20
+                sleep 60
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits:   { cpu: 50m, memory: 64Mi }
+          volumeMounts:
+            - { name: pod-logs, mountPath: /var/log/pods, readOnly: true }
+      volumes:
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: DirectoryOrCreate

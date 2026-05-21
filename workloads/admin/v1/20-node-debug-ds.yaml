@@ -1,0 +1,63 @@
+# `node-debug` — per-node admin DaemonSet. Stand-in for the kind of
+# observability/debugging tooling admins commonly deploy across every
+# node. Runs in kube-system so Tier 1's Kyverno policies (which all
+# exempt kube-system) don't block it.
+#
+# This DaemonSet deliberately does NOT use hostPath / hostPID / etc.
+# — that's tested separately by admin/v2/promtail-ds.yaml, which is
+# applied post-hardening to confirm an admin can still install a
+# hostPath-needing workload after policies are in force.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-debug
+  namespace: kube-system
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-debug
+  namespace: kube-system
+  labels: { app: node-debug }
+spec:
+  selector: { matchLabels: { app: node-debug } }
+  template:
+    metadata:
+      labels: { app: node-debug }
+    spec:
+      serviceAccountName: node-debug
+      automountServiceAccountToken: false
+      # Tolerate the control-plane taint — we want a copy on every node
+      # including the CP, mirroring how real observability DaemonSets
+      # behave.
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: debug
+          image: docker.io/library/busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                echo "[$(date -u +%FT%TZ)] node-debug on $(hostname)"
+                sleep 60
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits:   { cpu: 20m, memory: 32Mi }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "true"] }
+            initialDelaySeconds: 2
+            periodSeconds: 30

@@ -1,0 +1,90 @@
+# Tenant-creation bundle. Applied by the admin kubeconfig with __NS__
+# and __TENANT__ substituted. Creates:
+#
+#   - the tenant namespace,
+#   - `tenant-deployer` SA (with a long-lived token Secret) — used to
+#     authenticate the tenant's kubeconfig context,
+#   - `workload-runtime` SA (no permissions, no automount) — referenced
+#     by every workload pod so they don't use the namespace default SA,
+#   - a Role granting the deployer CRUD on the resources the tenant
+#     workloads need,
+#   - the RoleBinding connecting them.
+#
+# The PSS labels set the namespace to "restricted" enforcement, which
+# aligns with what Tier 1 will require post-hardening.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NS__
+  labels:
+    tenant: "__TENANT__"
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tenant-deployer
+  namespace: __NS__
+---
+# Long-lived token for tenant-deployer. From k8s 1.24+ SAs no longer
+# auto-create a Secret token; we create one explicitly so the
+# orchestrator can pull it into a kubeconfig.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tenant-deployer-token
+  namespace: __NS__
+  annotations:
+    kubernetes.io/service-account.name: tenant-deployer
+type: kubernetes.io/service-account-token
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workload-runtime
+  namespace: __NS__
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tenant-deployer
+  namespace: __NS__
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, secrets, persistentvolumeclaims, serviceaccounts, events]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates, certificaterequests]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    # Tenant can manage its own RBAC inside its namespace.
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tenant-deployer
+  namespace: __NS__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tenant-deployer
+subjects:
+  - kind: ServiceAccount
+    name: tenant-deployer
+    namespace: __NS__

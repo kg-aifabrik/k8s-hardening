@@ -1,0 +1,59 @@
+# `queue-worker` — background Deployment that LPUSHes to a redis list
+# every 5s. Stand-in for the "consumer of a queue" pattern.
+#
+# Uses the redis image so we get redis-cli for free.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue-worker
+  labels: { app: queue-worker }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: queue-worker } }
+  template:
+    metadata:
+      labels: { app: queue-worker }
+    spec:
+      serviceAccountName: workload-runtime
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: docker.io/bitnami/redis:7.4
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Keep pushing timestamped entries to the `queue-worker`
+              # list so the verify Job can confirm we're alive via LLEN.
+              # Also cap the list at 1000 to avoid unbounded memory.
+              while true; do
+                redis-cli -h cache LPUSH queue-worker "$(date +%s)" >/dev/null
+                redis-cli -h cache LTRIM queue-worker 0 999 >/dev/null
+                sleep 5
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits:   { cpu: 50m, memory: 64Mi }
+          # No HTTP port → use exec probes that confirm redis is reachable
+          # (if it's not, the worker is doing nothing useful anyway).
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -h cache PING | grep -q PONG"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -h cache PING | grep -q PONG"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
