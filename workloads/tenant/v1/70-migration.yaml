@@ -1,6 +1,8 @@
 # `migration` — one-shot Job that creates a `schema_migrations`-style
 # table in postgres. Stand-in for the migration step every real app
 # runs once per deploy.
+#
+# Uses postgres:16-alpine (Bitnami's docker.io tags are gone).
 ---
 apiVersion: batch/v1
 kind: Job
@@ -18,15 +20,14 @@ spec:
       restartPolicy: OnFailure
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1001
-        runAsGroup: 1001
-        fsGroup: 1001
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
         seccompProfile: { type: RuntimeDefault }
       initContainers:
-        # Wait for db to accept connections before the main migration runs.
         - name: wait-for-db
-          image: docker.io/bitnami/postgresql:16
-          command: ["bash", "-c"]
+          image: docker.io/library/postgres:16-alpine
+          command: ["sh", "-c"]
           args:
             - |
               for i in $(seq 1 60); do
@@ -47,12 +48,12 @@ spec:
             limits:   { cpu: 50m, memory: 64Mi }
       containers:
         - name: migrate
-          image: docker.io/bitnami/postgresql:16
+          image: docker.io/library/postgres:16-alpine
           imagePullPolicy: IfNotPresent
           env:
             - name: PGPASSWORD
               valueFrom: { secretKeyRef: { name: db-credentials, key: password } }
-          command: ["bash", "-c"]
+          command: ["sh", "-c"]
           args:
             - |
               set -e

@@ -26,7 +26,9 @@ spec:
         - name: httpbin
           image: docker.io/mccutchen/go-httpbin:v2.15.0
           imagePullPolicy: IfNotPresent
-          args: ["-port", "8080"]
+          # go-httpbin's image uses CMD (no ENTRYPOINT) so any `args:`
+          # here replaces the binary path. Default CMD already listens
+          # on :8080 — don't override.
           ports:
             - { containerPort: 8080, name: http }
           securityContext:

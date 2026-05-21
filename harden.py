@@ -48,6 +48,15 @@ METRICS_SERVER_URL = (
     f"https://github.com/kubernetes-sigs/metrics-server/releases/download/"
     f"{METRICS_SERVER_VERSION}/components.yaml"
 )
+# Storage provisioner for vanilla kubeadm clusters. Managed K8s
+# (EKS / GKE / AKS) ships its own default StorageClass — we apply
+# local-path-provisioner unconditionally (kubectl apply is idempotent)
+# but only promote it to default if no other default already exists.
+LOCAL_PATH_PROVISIONER_VERSION = "v0.0.31"
+LOCAL_PATH_PROVISIONER_URL = (
+    f"https://raw.githubusercontent.com/rancher/local-path-provisioner/"
+    f"{LOCAL_PATH_PROVISIONER_VERSION}/deploy/local-path-storage.yaml"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +517,29 @@ def phase_workload_deploy(kind: str, version: str,
         f"{('tenant=' + tenant) if tenant else ''} ===")
 
     if kind == "admin" and version == "v1":
+        # local-path-provisioner: gives kubeadm clusters a working
+        # default StorageClass so the db StatefulSet's PVC can bind.
+        # On managed K8s it's harmless (won't override the cloud
+        # provisioner unless we explicitly promote it).
+        log("installing local-path-provisioner")
+        run(["kubectl", "apply", "-f", LOCAL_PATH_PROVISIONER_URL])
+        # Promote to default only if no default already exists.
+        sc_default = run(
+            ["kubectl", "get", "storageclass", "-o",
+             "jsonpath={range .items[?(@.metadata.annotations."
+             "storageclass\\.kubernetes\\.io/is-default-class==\"true\")]}"
+             "{.metadata.name}{\"\\n\"}{end}"],
+            check=False, capture=True).stdout.strip()
+        if not sc_default:
+            log("no default StorageClass found; promoting local-path")
+            run(["kubectl", "patch", "storageclass", "local-path",
+                 "--type", "merge", "-p",
+                 '{"metadata":{"annotations":'
+                 '{"storageclass.kubernetes.io/is-default-class":"true"}}}'],
+                check=False)
+        else:
+            log(f"keeping existing default StorageClass ({sc_default})")
+
         # cert-manager: install the bundled manifest then wait for the
         # admission webhook backend to come up. Until it's ready,
         # subsequent ClusterIssuer/Certificate apply attempts will fail
@@ -531,9 +563,23 @@ def phase_workload_deploy(kind: str, version: str,
              '[{"op":"add","path":"/spec/template/spec/containers/0/args/-",'
              '"value":"--kubelet-insecure-tls"}]'], check=False)
 
-        # ClusterIssuer + node-debug DS — local YAML files.
+        # ClusterIssuer + node-debug DS — local YAML files. The
+        # ClusterIssuer apply specifically can race with cert-manager's
+        # webhook coming up; retry it for ~2 min.
         for f in sorted((WORKLOADS_DIR / "admin" / "v1").glob("*.yaml")):
-            run(["kubectl", "apply", "-f", str(f)])
+            deadline = time.time() + 120
+            while True:
+                cp = run(["kubectl", "apply", "-f", str(f)],
+                         check=False, capture=True)
+                if cp.returncode == 0:
+                    break
+                if time.time() > deadline:
+                    log(f"could not apply {f.name}: {cp.stderr}", "ERROR")
+                    raise subprocess.CalledProcessError(
+                        cp.returncode, cp.args, cp.stdout, cp.stderr)
+                log(f"retrying apply of {f.name} (webhook may be warming)",
+                    "WARN")
+                time.sleep(10)
 
     elif kind == "admin" and version == "v2":
         for f in sorted((WORKLOADS_DIR / "admin" / "v2").glob("*.yaml")):

@@ -2,54 +2,22 @@
 # substituting __NS__ with the target namespace and applies it.
 #
 # Exits 0 only if every check below passes:
-#   L1 — every workload in __NS__ reports Ready (caller has already
-#        run `kubectl wait`; the script verifies via the API).
-#   L2 — each Service is reachable at the cluster level (HTTP GET on
-#        web and api Services; redis PING on cache).
-#   L3 — end-to-end functional:
-#          - web -> api round trip returns 200
-#          - db accepts a write+read via psql
-#          - queue-worker has incremented its counter in redis at least once
-#          - cron-pinger has produced at least one successful run
+#   L2 — Service-level reachability (web HTTP, api HTTP, cache PING)
+#   L3 — End-to-end:
+#         - web -> api round-trip via nginx proxy_pass
+#         - db write+read via psql
+#         - queue-worker has pushed entries to redis
+#         - cron-pinger has recorded a success
 #
-# Image: a single tooling container with curl, redis-cli, postgresql-client.
-# We use bitnami/postgresql which ships psql and runs non-root.
+# Image: postgres:16-alpine ships psql + bash. We apk-add curl +
+# redis (for redis-cli) at runtime — ~3-5 second install per run.
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: workload-verify
   namespace: __NS__
-automountServiceAccountToken: true
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: workload-verify
-  namespace: __NS__
-rules:
-  # The verifier reads pod/service state and reads CronJob status to
-  # confirm at least one successful run.
-  - apiGroups: [""]
-    resources: [pods, services]
-    verbs: [get, list]
-  - apiGroups: [batch]
-    resources: [jobs, cronjobs]
-    verbs: [get, list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: workload-verify
-  namespace: __NS__
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: workload-verify
-subjects:
-  - kind: ServiceAccount
-    name: workload-verify
-    namespace: __NS__
+automountServiceAccountToken: false
 ---
 apiVersion: batch/v1
 kind: Job
@@ -70,20 +38,21 @@ spec:
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1001
-        runAsGroup: 1001
-        fsGroup: 1001
-        seccompProfile:
-          type: RuntimeDefault
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: verify
-          image: docker.io/bitnami/postgresql:16
+          image: docker.io/library/postgres:16-alpine
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
+            # apk needs to write under /var/cache/apk + /etc/apk; we
+            # provide writable scratch via emptyDir mounts. The actual
+            # binary layout (/usr/bin etc.) stays read-only.
             readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
+            capabilities: { drop: [ALL] }
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits:   { cpu: 200m, memory: 256Mi }
@@ -94,31 +63,39 @@ spec:
                   name: db-credentials
                   key: password
           volumeMounts:
-            - { name: scratch, mountPath: /tmp }
+            - { name: scratch,   mountPath: /tmp }
+            - { name: apk-cache, mountPath: /var/cache/apk }
+            - { name: apk-local, mountPath: /usr/local }
+            # apk needs to update /etc/apk on install. Mounting an
+            # emptyDir on /etc isn't an option (loses /etc/passwd
+            # etc.); instead we install into a writable prefix via
+            # `apk --root /tmp/sysroot add ...`.
           command: ["bash", "-euo", "pipefail", "-c"]
           args:
             - |
-              # /tmp is writable via the scratch emptyDir; bitnami/postgresql
-              # already ships curl + redis-cli + psql, so no installs needed.
-              # We collect each check's outcome and exit 1 if any failed.
+              # Install curl + redis-cli into a tmp sysroot so we don't
+              # need to write to /etc or /var/lib/apk on the (read-only)
+              # rootfs. The sysroot's binaries are then on PATH.
+              mkdir -p /tmp/sysroot
+              apk --root /tmp/sysroot --no-cache --initdb \
+                  add curl redis ca-certificates 2>&1 | tail -3
+              export PATH=/tmp/sysroot/usr/bin:/tmp/sysroot/usr/sbin:$PATH
+
               FAILED=0
               fail() { echo "FAIL: $*" >&2; FAILED=1; }
               ok()   { echo "OK:   $*"; }
 
               echo "===== L2: Service-level reachability ====="
-
               if curl -sf -m 5 http://web.__NS__.svc.cluster.local:8080/ >/tmp/web.html; then
                 ok "web Service serves HTTP 200"
               else
                 fail "web Service unreachable or non-200"
               fi
-
               if curl -sf -m 5 http://api.__NS__.svc.cluster.local/get >/tmp/api.json; then
                 ok "api Service serves HTTP 200"
               else
                 fail "api Service unreachable or non-200"
               fi
-
               if redis-cli -h cache.__NS__.svc.cluster.local PING | grep -q PONG; then
                 ok "cache Service responds to PING"
               else
@@ -126,25 +103,19 @@ spec:
               fi
 
               echo "===== L3: End-to-end functional ====="
-
-              # web -> api: curl the web pod's static page; it should reference api
-              # (we configured nginx to proxy_pass /api/ to the api Service).
               if curl -sf -m 5 http://web.__NS__.svc.cluster.local:8080/api/get | grep -q '"url"'; then
                 ok "web -> api round-trip succeeds (nginx proxy_pass)"
               else
                 fail "web -> api proxy_pass broken"
               fi
 
-              # db write+read.
               psql "host=db-0.db.__NS__.svc.cluster.local user=postgres dbname=postgres" \
                 -c "CREATE TABLE IF NOT EXISTS verify_smoke (id serial primary key, ts timestamptz default now());" \
                 -c "INSERT INTO verify_smoke DEFAULT VALUES RETURNING id;" \
                 -c "SELECT count(*) FROM verify_smoke;" >/tmp/db.out 2>&1 \
                 && ok "db write+read succeeded" \
-                || fail "db round-trip failed (see /tmp/db.out below)"
+                || fail "db round-trip failed (see /tmp/db.out)"
 
-              # queue-worker is supposed to LPUSH to a list every 5s and our
-              # check is that the list has accumulated entries.
               QLEN=$(redis-cli -h cache.__NS__.svc.cluster.local LLEN queue-worker || echo 0)
               if [ "${QLEN:-0}" -gt 0 ]; then
                 ok "queue-worker has pushed $QLEN entries to redis"
@@ -152,11 +123,6 @@ spec:
                 fail "queue-worker has not pushed anything to redis yet"
               fi
 
-              # cron-pinger should have produced at least one successful Job
-              # in the last few minutes. We check the CronJob's status.
-              # (No kubectl in this image — we'd use the in-cluster API, but
-              # for simplicity we rely on the cron-pinger logging to redis
-              # via SET; cron-pinger pushes the timestamp on each success.)
               LAST_PING=$(redis-cli -h cache.__NS__.svc.cluster.local GET cron-pinger:last-success || echo "")
               if [ -n "$LAST_PING" ]; then
                 ok "cron-pinger last success: $LAST_PING"
@@ -169,10 +135,14 @@ spec:
                 echo "ALL CHECKS PASSED for namespace __NS__"
                 exit 0
               else
-                echo "FAILURES recorded in namespace __NS__:"
+                echo "FAILURES recorded in namespace __NS__"
                 cat /tmp/db.out 2>/dev/null || true
                 exit 1
               fi
       volumes:
         - name: scratch
+          emptyDir: {}
+        - name: apk-cache
+          emptyDir: {}
+        - name: apk-local
           emptyDir: {}

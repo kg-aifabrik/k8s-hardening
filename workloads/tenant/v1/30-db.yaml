@@ -1,12 +1,12 @@
 # `db` — PostgreSQL StatefulSet (1 replica). Stateful + persistent
 # storage + headless Service for pod DNS.
 #
-# Uses bitnami/postgresql which runs non-root by default (uid 1001) and
-# expects writable /bitnami/postgresql. PVC is mounted there via
-# volumeClaimTemplates.
-#
-# Password is in a Secret. The verify Job and migration Job both read
-# this Secret via env vars.
+# Uses the OFFICIAL `postgres:16-alpine` (Bitnami's docker.io tags were
+# pulled in mid-2025). The official image's entrypoint detects non-root
+# startup and skips the chown step — fsGroup makes the PVC writable.
+# PGDATA points at a subdir so the entrypoint sees an empty dir on
+# first run (Kubernetes mounts /var/lib/postgresql/data with a
+# `lost+found` on some CSI drivers).
 ---
 apiVersion: v1
 kind: Secret
@@ -15,8 +15,6 @@ metadata:
 type: Opaque
 stringData:
   username: postgres
-  # Demo credential. Real deployments would use ExternalSecrets or
-  # vault-injected secrets; that's out of scope for the framework test.
   password: not-a-real-password-please-change
 ---
 apiVersion: v1
@@ -25,7 +23,6 @@ metadata:
   name: db
   labels: { app: db }
 spec:
-  # Headless Service so each pod gets stable DNS (db-0.db, db-1.db, …).
   clusterIP: None
   selector: { app: db }
   ports:
@@ -47,28 +44,30 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1001
-        runAsGroup: 1001
-        fsGroup: 1001
+        # postgres uid in the official alpine image is 70.
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: postgres
-          image: docker.io/bitnami/postgresql:16
+          image: docker.io/library/postgres:16-alpine
           imagePullPolicy: IfNotPresent
           ports:
             - { containerPort: 5432, name: postgres }
           env:
-            - name: POSTGRESQL_USERNAME
+            - name: POSTGRES_USER
               valueFrom: { secretKeyRef: { name: db-credentials, key: username } }
-            - name: POSTGRESQL_PASSWORD
+            - name: POSTGRES_PASSWORD
               valueFrom: { secretKeyRef: { name: db-credentials, key: password } }
-            - name: POSTGRESQL_DATABASE
+            - name: POSTGRES_DB
               value: postgres
+            # Use a subdirectory so first-run sees an empty dir even on
+            # CSI volumes that auto-create `lost+found`.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           securityContext:
             allowPrivilegeEscalation: false
-            # Bitnami's postgres image writes runtime state under /opt and
-            # needs /tmp; we keep the PVC for the data dir, scratch tmpfs
-            # for everything else.
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
           resources:
@@ -76,22 +75,23 @@ spec:
             limits:   { cpu: 500m, memory: 512Mi }
           readinessProbe:
             exec:
-              command: ["bash", "-c", "pg_isready -U postgres -h 127.0.0.1"]
+              command: ["sh", "-c", "pg_isready -U postgres -h 127.0.0.1"]
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             exec:
-              command: ["bash", "-c", "pg_isready -U postgres -h 127.0.0.1"]
+              command: ["sh", "-c", "pg_isready -U postgres -h 127.0.0.1"]
             initialDelaySeconds: 30
             periodSeconds: 15
           volumeMounts:
-            - { name: data,    mountPath: /bitnami/postgresql }
+            - { name: data,    mountPath: /var/lib/postgresql/data }
             - { name: scratch, mountPath: /tmp }
-            - { name: opt,     mountPath: /opt/bitnami/postgresql/tmp }
+            # postgres init writes to /var/run/postgresql for the unix socket.
+            - { name: var-run, mountPath: /var/run/postgresql }
       volumes:
         - name: scratch
           emptyDir: {}
-        - name: opt
+        - name: var-run
           emptyDir: {}
   volumeClaimTemplates:
     - metadata: { name: data }
