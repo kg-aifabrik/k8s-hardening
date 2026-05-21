@@ -5,7 +5,7 @@ per-environment setup guides under [`docs/`](../docs/).
 
 | Script | Where it runs | What it does |
 |--------|---------------|--------------|
-| [`prep-node.sh`](prep-node.sh) | On a target node (as root) | Set hostname, load kernel modules + sysctls, disable swap, install containerd + kubeadm/kubelet/kubectl v1.29. Idempotent. |
+| [`prep-node.sh`](prep-node.sh) | On a target node (as root) | Set hostname, load kernel modules + sysctls, disable swap, install containerd + kubeadm/kubelet/kubectl v1.35. Idempotent. |
 | [`install-kubescape.sh`](install-kubescape.sh) | On the host that will run `harden.py` (as root) | Download the kubescape CLI release binary and install to `/usr/local/bin`. Auto-detects OS (Linux/macOS) + arch (amd64/arm64). |
 | [`lima-up.sh`](lima-up.sh) | macOS workstation | Full Lima single-node provisioning: launch VM, run `prep-node.sh`, `kubeadm init`, install Flannel, set up tooling, write inventory. |
 | [`lima-down.sh`](lima-down.sh) | macOS workstation | Stop and delete the Lima VM. |

@@ -20,7 +20,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: [kube-system, kube-bench-scan]
+              namespaces: [kube-system, kube-bench-scan, local-path-storage, cert-manager]
       validate:
         message: "Sharing host namespaces (network/PID/IPC) is not allowed."
         pattern:

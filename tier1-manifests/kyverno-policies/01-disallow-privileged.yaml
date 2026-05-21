@@ -20,7 +20,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: [kube-system, kube-bench-scan]  # kube-proxy, CNI need privileged; scanner needs hostPID/hostPath
+              namespaces: [kube-system, kube-bench-scan, local-path-storage, cert-manager]  # kube-proxy, CNI need privileged; scanner needs hostPID/hostPath
       validate:
         message: "Privileged containers are not allowed."
         pattern:

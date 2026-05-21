@@ -21,7 +21,7 @@
 # What it does:
 #   1. Verifies SSH to all 3 hosts.
 #   2. Copies + runs prep-node.sh on each (sets hostname, installs
-#      containerd + kubeadm v1.29).
+#      containerd + kubeadm v1.35).
 #   3. Runs `kubeadm init` on cp with the public IP in the cert SANs.
 #   4. Installs Flannel CNI.
 #   5. Joins w1 and w2.

@@ -85,7 +85,7 @@ YAML before the first `start` if your Mac is constrained.
 
 ## 3. Bootstrap kubeadm inside the VM
 
-Open a shell on the VM and run the standard kubeadm v1.29 install:
+Open a shell on the VM and run the standard kubeadm v1.35 install:
 
 ```bash
 limactl shell k8s-harden
@@ -114,10 +114,10 @@ containerd config default | sudo tee /etc/containerd/config.toml >/dev/null
 sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
 sudo systemctl restart containerd
 
-# kubeadm/kubelet/kubectl v1.29 (pin to a 1.29.x line)
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key \
+# kubeadm/kubelet/kubectl v1.35 (pin to a 1.29.x line)
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key \
   | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' \
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /' \
   | sudo tee /etc/apt/sources.list.d/kubernetes.list
 sudo apt-get update && sudo apt-get install -y kubelet kubeadm kubectl
 sudo apt-mark hold kubelet kubeadm kubectl

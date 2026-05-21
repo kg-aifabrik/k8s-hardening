@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepare an Ubuntu 22.04 / 24.04 host to be a kubeadm v1.29 node.
+# Prepare an Ubuntu 22.04 / 24.04 host to be a kubeadm v1.35 node.
 #
 # Idempotent: safe to re-run. Does NOT call `kubeadm init` or
 # `kubeadm join` — those are environment-specific and live in the
@@ -69,13 +69,13 @@ sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.to
 systemctl restart containerd
 systemctl enable containerd >/dev/null 2>&1
 
-echo "[5/6] Installing kubelet/kubeadm/kubectl v1.29"
+echo "[5/6] Installing kubelet/kubeadm/kubectl v1.35"
 mkdir -p /etc/apt/keyrings
 if [[ ! -f /etc/apt/keyrings/kubernetes-apt-keyring.gpg ]]; then
-  curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key \
+  curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.35/deb/Release.key \
     | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 fi
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' \
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.35/deb/ /' \
   > /etc/apt/sources.list.d/kubernetes.list
 apt-get update -y
 apt-get install -y kubelet kubeadm kubectl

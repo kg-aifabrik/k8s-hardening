@@ -20,7 +20,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: [kube-system, kyverno, kube-bench-scan]
+              namespaces: [kube-system, kyverno, kube-bench-scan, local-path-storage, cert-manager]
       validate:
         message: "Pods must specify a non-default ServiceAccount."
         deny:

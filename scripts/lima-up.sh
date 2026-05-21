@@ -11,7 +11,7 @@
 # What it does:
 #   1. limactl start using .lima/k8s-harden.yaml (idempotent).
 #   2. Copies prep-node.sh + install-kubescape.sh into the VM.
-#   3. Runs prep-node.sh (containerd + kubeadm v1.29).
+#   3. Runs prep-node.sh (containerd + kubeadm v1.35).
 #   4. kubeadm init, untaint, install Flannel.
 #   5. apt installs ansible/git; installs kubescape.
 #   6. Clones repo + writes the single-node hosts.ini in the VM.

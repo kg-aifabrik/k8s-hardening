@@ -14,17 +14,35 @@ metadata:
   namespace: logging
 spec:
   exceptions:
+    # Kyverno auto-generates derivative rules (named autogen-<original>)
+    # when a policy applies to pod controllers (Deployment, DaemonSet,
+    # StatefulSet, Job, CronJob, ...). The PolicyException must list
+    # both the original rule and the autogen variant — exempting only
+    # the original lets the autogen rule still block the pod that the
+    # controller creates.
+    #
+    # The policyName and rule name strings are looked up in
+    # tier1-manifests/kyverno-policies/*.yaml. They are NOT the file
+    # names — they are the `metadata.name` of the ClusterPolicy and
+    # the `name:` of each rule.
     - policyName: disallow-host-path
-      ruleNames: ["host-path"]
-    - policyName: disallow-privileged
-      ruleNames: ["privileged-containers"]
+      ruleNames: ["host-path", "autogen-host-path"]
+    - policyName: disallow-privileged-containers
+      ruleNames: ["privileged-containers", "autogen-privileged-containers"]
     - policyName: require-readonly-rootfs
-      ruleNames: ["read-only-root-fs"]
+      ruleNames: ["readonly-rootfs", "autogen-readonly-rootfs"]
     - policyName: disallow-default-sa
-      ruleNames: ["default-sa"]
+      ruleNames: ["default-sa", "autogen-default-sa"]
   match:
     any:
+      # autogen-* rules fire on the controller resource (DaemonSet),
+      # not the Pod. Match both so the exception covers admission of
+      # the DaemonSet itself and the Pods it spawns.
       - resources:
           kinds: [Pod]
           namespaces: [logging]
           names: ["promtail-*"]
+      - resources:
+          kinds: [DaemonSet]
+          namespaces: [logging]
+          names: ["promtail"]

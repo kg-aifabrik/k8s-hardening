@@ -20,7 +20,7 @@ spec:
       exclude:
         any:
           - resources:
-              namespaces: [kube-system, kyverno, kube-bench-scan]
+              namespaces: [kube-system, kyverno, kube-bench-scan, local-path-storage, cert-manager]
       validate:
         message: "readOnlyRootFilesystem must be true. Mount emptyDir for writable paths."
         pattern:
