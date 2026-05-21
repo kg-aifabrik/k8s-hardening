@@ -11,6 +11,7 @@ date.
 |--------|----------|-------------|------|-------|
 | [`multinode-do-20260520/`](multinode-do-20260520/) | 1 CP + 2 workers on DigitalOcean (Premium AMD) | v1.29.15 | 2026-05-20 | First multi-node reference run. |
 | [`multinode-do-20260520-premium-intel/`](multinode-do-20260520-premium-intel/) | 1 CP + 2 workers on DigitalOcean (Premium Intel) | v1.29.15 | 2026-05-20 | Fresh-droplet end-to-end validation of `scripts/standalone-bootstrap.sh` after the five bug fixes. Same delta as the AMD run (+11.6 / +3.8). |
+| [`multinode-do-20260521-v1.35/`](multinode-do-20260521-v1.35/) | 1 CP + 2 workers on DigitalOcean (Premium Intel) | **v1.35.5** | 2026-05-21 | **First complete one-shot pipeline run on fresh droplets with workload-validation harness.** All 4 checkpoints PASS (CP0 pre-hardening, CP1 post-Tier1, CP2-A tenant-a + harness, CP2-B new tenant-b post-hardening). kube-bench +11.6 pts, kubescape +9.5 pts. Pyramid-validated on kind first (caught 3 real bugs), then this run was clean. |
 
 ## What's included
 

@@ -142,14 +142,16 @@ clusters. The score formula is `pass / (pass + fail + warn) * 100` —
 i.e., kube-bench `WARN` results (mostly manual-review CIS items) count
 in the denominator. If you exclude warns you'll see higher numbers.
 
-| Topology                          | kube-bench (baseline → post) | kubescape (baseline → post) | Workload CP1 | Workload CP2 |
-|-----------------------------------|------------------------------|------------------------------|--------------|--------------|
-| Single node (Lima, untainted CP)  | 46.9% → 58.5% (+11.6)        | 46.4% → 50.2% (+3.8)         | n/a *        | n/a *        |
-| 3 nodes (DigitalOcean, tainted CP)| 56.6% → 68.9% (+12.3)        | 46.4% → 50.2% (+3.8)         | n/a *        | n/a *        |
+| Topology                                | kube-bench (baseline → post) | kubescape (baseline → post) | CP1 | CP2 |
+|-----------------------------------------|------------------------------|------------------------------|-----|-----|
+| Single node (Lima, untainted CP) v1.29  | 46.9% → 58.5% (+11.6)        | 46.4% → 50.2% (+3.8)         | n/a *| n/a * |
+| 3 nodes (DigitalOcean) v1.29            | 56.6% → 68.9% (+12.3)        | 46.4% → 50.2% (+3.8)         | n/a *| n/a * |
+| **3 nodes (DigitalOcean) v1.35**        | **46.9% → 58.5% (+11.6)**    | **39.7% → 49.2% (+9.5)**     | **PASS** | **PASS** |
 
-\* Reference runs predate the workload-validation harness. The next
-end-to-end run on fresh droplets will populate CP1/CP2 columns;
-results land under [`reports/samples/`](reports/samples/).
+\* Pre-T8 reference runs that predate the workload-validation
+harness. The 2026-05-21 v1.35 run is the first end-to-end pipeline
+with both CIS-score deltas and workload checkpoints validated. Full
+artifacts under [`reports/samples/multinode-do-20260521-v1.35/`](reports/samples/multinode-do-20260521-v1.35/).
 
 The kubescape delta is topology-independent (kubescape reads cluster
 state via the API). The kube-bench numbers differ because the scanner
