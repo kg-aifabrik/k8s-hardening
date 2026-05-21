@@ -73,69 +73,74 @@ spec:
           command: ["bash", "-euo", "pipefail", "-c"]
           args:
             - |
-              # Install curl + redis-cli into a tmp sysroot. Four apk
-              # gotchas when running non-root with a custom --root:
-              #   1. `--usermode` for --initdb as non-root.
-              #   2. Copy /etc/apk/repositories from host (postgres:16-
-              #      alpine IS alpine and ships a valid one).
-              #   3. Copy /etc/apk/keys/ or every package is untrusted.
-              #   4. `--no-scripts` — package post-install triggers
-              #      (busybox, ca-certificates) call `unshare`, which
-              #      is blocked by Tier 1's drop-ALL-capabilities rule.
-              #      Triggers are cosmetic; the binaries install fine.
+              # Tooling strategy: use what postgres:16-alpine already
+              # ships, install only what's missing.
+              #   wget    — busybox built-in. Use INSTEAD of curl, which
+              #             had RPATH problems when apk-installed into
+              #             /tmp/sysroot (libcurl can't be found).
+              #   psql    — at /usr/local/bin/psql in the postgres image.
+              #             Some images strip /usr/local from non-login
+              #             PATH; we use the absolute path to be safe.
+              #   redis-cli — not in the postgres image. apk install,
+              #               which is the one place the sysroot trick
+              #               does work (statically linked enough).
               mkdir -p /tmp/sysroot/etc/apk
               cp /etc/apk/repositories /tmp/sysroot/etc/apk/repositories
               cp -r /etc/apk/keys /tmp/sysroot/etc/apk/keys
               apk --root /tmp/sysroot --usermode --no-cache --initdb \
-                  --no-scripts add curl redis 2>&1 | tail -5
-              export PATH=/tmp/sysroot/usr/bin:/tmp/sysroot/usr/sbin:$PATH
-              # Sanity check before the actual L2/L3 logic runs.
-              command -v curl    >/dev/null || { echo "curl not on PATH after install" >&2; exit 1; }
-              command -v redis-cli >/dev/null || { echo "redis-cli not on PATH" >&2; exit 1; }
+                  --no-scripts add redis 2>&1 | tail -3
+
+              # Use full paths so PATH inheritance / env quirks can't bite.
+              REDIS_CLI=/tmp/sysroot/usr/bin/redis-cli
+              PSQL=/usr/local/bin/psql
+              # Sanity check.
+              [ -x "$REDIS_CLI" ] || { echo "FATAL: $REDIS_CLI missing" >&2; exit 1; }
+              [ -x "$PSQL" ]      || { echo "FATAL: $PSQL missing" >&2; exit 1; }
+              command -v wget >/dev/null || { echo "FATAL: busybox wget missing?" >&2; exit 1; }
 
               FAILED=0
               fail() { echo "FAIL: $*" >&2; FAILED=1; }
               ok()   { echo "OK:   $*"; }
 
               echo "===== L2: Service-level reachability ====="
-              if curl -sf -m 5 http://web.__NS__.svc.cluster.local:8080/ >/tmp/web.html; then
+              if wget -qO /tmp/web.html --timeout=5 --tries=1 http://web.__NS__.svc.cluster.local:8080/; then
                 ok "web Service serves HTTP 200"
               else
                 fail "web Service unreachable or non-200"
               fi
-              if curl -sf -m 5 http://api.__NS__.svc.cluster.local/get >/tmp/api.json; then
+              if wget -qO /tmp/api.json --timeout=5 --tries=1 http://api.__NS__.svc.cluster.local/get; then
                 ok "api Service serves HTTP 200"
               else
                 fail "api Service unreachable or non-200"
               fi
-              if redis-cli -h cache.__NS__.svc.cluster.local PING | grep -q PONG; then
+              if "$REDIS_CLI" -h cache.__NS__.svc.cluster.local PING | grep -q PONG; then
                 ok "cache Service responds to PING"
               else
                 fail "cache Service did not PONG"
               fi
 
               echo "===== L3: End-to-end functional ====="
-              if curl -sf -m 5 http://web.__NS__.svc.cluster.local:8080/api/get | grep -q '"url"'; then
+              if wget -qO- --timeout=5 --tries=1 http://web.__NS__.svc.cluster.local:8080/api/get | grep -q '"url"'; then
                 ok "web -> api round-trip succeeds (nginx proxy_pass)"
               else
                 fail "web -> api proxy_pass broken"
               fi
 
-              psql "host=db-0.db.__NS__.svc.cluster.local user=postgres dbname=postgres" \
+              "$PSQL" "host=db-0.db.__NS__.svc.cluster.local user=postgres dbname=postgres" \
                 -c "CREATE TABLE IF NOT EXISTS verify_smoke (id serial primary key, ts timestamptz default now());" \
                 -c "INSERT INTO verify_smoke DEFAULT VALUES RETURNING id;" \
                 -c "SELECT count(*) FROM verify_smoke;" >/tmp/db.out 2>&1 \
                 && ok "db write+read succeeded" \
                 || fail "db round-trip failed (see /tmp/db.out)"
 
-              QLEN=$(redis-cli -h cache.__NS__.svc.cluster.local LLEN queue-worker || echo 0)
+              QLEN=$("$REDIS_CLI" -h cache.__NS__.svc.cluster.local LLEN queue-worker || echo 0)
               if [ "${QLEN:-0}" -gt 0 ]; then
                 ok "queue-worker has pushed $QLEN entries to redis"
               else
                 fail "queue-worker has not pushed anything to redis yet"
               fi
 
-              LAST_PING=$(redis-cli -h cache.__NS__.svc.cluster.local GET cron-pinger:last-success || echo "")
+              LAST_PING=$("$REDIS_CLI" -h cache.__NS__.svc.cluster.local GET cron-pinger:last-success || echo "")
               if [ -n "$LAST_PING" ]; then
                 ok "cron-pinger last success: $LAST_PING"
               else
