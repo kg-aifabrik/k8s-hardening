@@ -262,15 +262,32 @@ def run_kubescape(outdir: Path) -> ScanResult:
 # phases
 # ---------------------------------------------------------------------------
 
-def phase_baseline(outdir: Path) -> dict[str, ScanResult]:
-    log("=== PHASE: baseline ===")
+def _scan_and_report(outdir: Path, filename: str, title: str,
+                     phase_label: str) -> dict[str, ScanResult]:
+    log(f"=== PHASE: {phase_label} ===")
     results = {
         "kube-bench": run_kube_bench(outdir),
         "kubescape":  run_kubescape(outdir),
     }
-    write_report(outdir / "baseline.md", "Baseline CIS Scan", results)
+    write_report(outdir / filename, title, results)
     write_scores(outdir, results)
     return results
+
+
+def phase_baseline(outdir: Path) -> dict[str, ScanResult]:
+    return _scan_and_report(outdir, "baseline.md",
+                            "Baseline CIS Scan", "baseline")
+
+
+def phase_assess(outdir: Path) -> dict[str, ScanResult]:
+    """
+    Same scans as `baseline` but framed as a standalone posture
+    audit: writes assessment.md instead of baseline.md and lands
+    under reports/assess_<ts>/. No subsequent hardening expected.
+    """
+    return _scan_and_report(outdir, "assessment.md",
+                            "Cluster Security Posture Assessment",
+                            "assess")
 
 
 def phase_tier1() -> None:
@@ -455,8 +472,12 @@ def write_diff(baseline_dir: Path, post_dir: Path,
 
 def main() -> int:
     p = argparse.ArgumentParser(description="k8s CIS hardening orchestrator")
-    p.add_argument("phase", choices=["baseline", "tier1", "tier2",
-                                     "validate", "all"])
+    p.add_argument("phase", choices=["assess", "baseline", "tier1",
+                                     "tier2", "validate", "all"],
+                   help=(
+                       "assess = posture report only, no changes. "
+                       "baseline = same scan but framed as the snapshot "
+                       "before tier1/tier2."))
     p.add_argument("--inventory", default=str(TIER2_DIR / "inventory" / "hosts.ini"),
                    help="Ansible inventory for tier2")
     p.add_argument("--baseline-dir", help="for validate: path to baseline report dir")
@@ -465,14 +486,16 @@ def main() -> int:
     args = p.parse_args()
 
     require(["kubectl"])
-    if args.phase in ("baseline", "validate", "all"):
+    if args.phase in ("assess", "baseline", "validate", "all"):
         require(["kubescape"])
     if args.phase in ("tier2", "all") and not args.skip_tier2:
         require(["ansible-playbook"])
 
     REPORT_DIR.mkdir(exist_ok=True)
 
-    if args.phase == "baseline":
+    if args.phase == "assess":
+        phase_assess(timestamped_dir(REPORT_DIR, "assess"))
+    elif args.phase == "baseline":
         phase_baseline(timestamped_dir(REPORT_DIR, "baseline"))
     elif args.phase == "tier1":
         phase_tier1()

@@ -36,24 +36,51 @@ setup guide walks through invoking them.
 
 ## Agentic Mode
 
-If you'd rather hand the whole exercise to an autonomous coding
-agent (e.g., Claude Code), point it at
+If you'd rather hand the exercise to an autonomous coding agent
+(e.g., Claude Code), point it at
 [docs/AGENTIC-MODE.md](docs/AGENTIC-MODE.md). That doc is the
-agent's runbook: given either a DigitalOcean API token or an existing
-kubeconfig, the agent provisions or uses a cluster, runs the full
-pipeline, commits the resulting reports under
-[`reports/samples/`](reports/samples/), and tears down whatever it
-provisioned. Known failure modes (five real bugs from the May 2026
-validation sessions) are baked in as gotchas the agent shouldn't
-need to rediscover.
+agent's runbook, with three mission types:
 
-Typical agent prompt:
+| Mission | When to ask for it | What the agent does |
+|---------|--------------------|---------------------|
+| **A — Assess** | *"What's our CIS posture?"* | Read-only scan. Produces a per-control pass/fail/warn report under `reports/assess_<ts>/`. No cluster changes. |
+| **B — Harden existing** | *"Run the hardening pipeline on this cluster"* (kubeconfig already exists) | Full pipeline including Tier 1 + Tier 2, plus a before/after delta report. Skips Tier 2 automatically on managed K8s. |
+| **C — Provision + harden** | *"Spin up a K8s cluster and run the hardening test"* (no cluster yet) | Provisions 3 DigitalOcean droplets, runs the full pipeline, commits the delta report, **and tears the droplets down.** Requires a DO API token. |
 
-> *"Run the hardening test against my cluster. Token: `dop_v1_…`.
-> Budget under $1, tear everything down when done, and commit the
-> reports to git."*
+Known failure modes (five real bugs from the May 2026 validation
+sessions) are baked into the runbook as pre-documented gotchas the
+agent shouldn't need to rediscover.
+
+Example prompts:
+
+> *"Generate a CIS posture report for the cluster in `~/.kube/config`."*  (Mission A)
+>
+> *"Run the hardening test against my cluster — kubeconfig is `~/.kube/eks-prod`."*  (Mission B)
+>
+> *"Spin up a K8s cluster on DigitalOcean and run the hardening test.
+> Token: `dop_v1_…`. Budget under $1, tear everything down when done,
+> commit the reports."*  (Mission C)
 
 ## Usage
+
+### Assess only — security posture report, no changes
+
+If you just want to know **which CIS controls your cluster passes and
+which it fails**, without modifying anything:
+
+```bash
+./harden.py assess
+```
+
+That runs both scanners (kube-bench DaemonSet on every node;
+kubescape against the API server) and writes a per-control pass /
+fail / warn report with remediation guidance to
+`reports/assess_<ts>/assessment.md`. No Tier 1 manifests, no Ansible
+playbook, no apiserver restart. Read-only.
+
+Works on any cluster — managed K8s, kubeadm, Lima, kind. ~5 minutes.
+
+### Full hardening pipeline
 
 The orchestrator entrypoint is the same across environments. Only the
 inventory and `--skip-tier2` flag change.
@@ -72,7 +99,7 @@ $EDITOR tier2-ansible/inventory/hosts.ini   # follow the setup guide for content
 Or run phases individually:
 
 ```bash
-./harden.py baseline                                          # ~5 min
+./harden.py baseline                                          # ~5 min — same scan as `assess`, framed as "before"
 ./harden.py tier1                                             # ~2 min
 ./harden.py tier2 --inventory tier2-ansible/inventory/hosts.ini  # ~10 min
 ./harden.py validate --baseline-dir reports/baseline_<ts>     # ~3 min
