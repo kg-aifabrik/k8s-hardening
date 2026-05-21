@@ -73,21 +73,25 @@ spec:
           command: ["bash", "-euo", "pipefail", "-c"]
           args:
             - |
-              # Install curl + redis-cli into a tmp sysroot. Three apk
+              # Install curl + redis-cli into a tmp sysroot. Four apk
               # gotchas when running non-root with a custom --root:
-              #   1. `--usermode` is required for --initdb as non-root.
-              #   2. The new sysroot has no /etc/apk/repositories — apk
-              #      doesn't know where to fetch from. Copy from the
-              #      host image (postgres:16-alpine IS alpine, so it
-              #      ships a usable /etc/apk/repositories).
-              #   3. Without /etc/apk/keys/ in the sysroot, apk rejects
-              #      every package as untrusted. Copy those too.
+              #   1. `--usermode` for --initdb as non-root.
+              #   2. Copy /etc/apk/repositories from host (postgres:16-
+              #      alpine IS alpine and ships a valid one).
+              #   3. Copy /etc/apk/keys/ or every package is untrusted.
+              #   4. `--no-scripts` — package post-install triggers
+              #      (busybox, ca-certificates) call `unshare`, which
+              #      is blocked by Tier 1's drop-ALL-capabilities rule.
+              #      Triggers are cosmetic; the binaries install fine.
               mkdir -p /tmp/sysroot/etc/apk
               cp /etc/apk/repositories /tmp/sysroot/etc/apk/repositories
               cp -r /etc/apk/keys /tmp/sysroot/etc/apk/keys
               apk --root /tmp/sysroot --usermode --no-cache --initdb \
-                  add curl redis ca-certificates 2>&1 | tail -5
+                  --no-scripts add curl redis 2>&1 | tail -5
               export PATH=/tmp/sysroot/usr/bin:/tmp/sysroot/usr/sbin:$PATH
+              # Sanity check before the actual L2/L3 logic runs.
+              command -v curl    >/dev/null || { echo "curl not on PATH after install" >&2; exit 1; }
+              command -v redis-cli >/dev/null || { echo "redis-cli not on PATH" >&2; exit 1; }
 
               FAILED=0
               fail() { echo "FAIL: $*" >&2; FAILED=1; }
