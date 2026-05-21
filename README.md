@@ -21,13 +21,13 @@ coverage of the CIS controls — read the comparison before deciding.
 
 | Environment | Best for | Tier 1 | Tier 2 | Notes |
 |-------------|----------|--------|--------|-------|
-| **[Local Lima](docs/SETUP-LIMA.md)** | Smoke-test on your Mac in 10 min | ✅ | ⚠️ via local conn | Single node; Ansible-over-SSH path not exercised |
+| **[Local (Rancher Desktop + kind)](docs/SETUP-LOCAL.md)** | Smoke-test on your Mac in 2-3 min | ✅ | ❌ (--skip-tier2) | Multi-node kind cluster on K8s 1.35. Catches manifest/Kyverno bugs locally before any cloud spend. |
 | **[Standalone multi-node](docs/SETUP-STANDALONE.md)** | Realistic eval; auditable report | ✅ | ✅ | Self-managed kubeadm on cloud VMs or on-prem. Full pipeline. ~$0.30 per test run on DigitalOcean |
 | **[Managed K8s (EKS/GKE)](docs/SETUP-HYPERSCALER.md)** | Already on managed K8s | ✅ | ❌ | Provider owns the control plane. Tier 1 + scans only; needs provider-specific kube-bench benchmark |
 
 Detailed step-by-step instructions live in `docs/`:
 
-- [docs/SETUP-LIMA.md](docs/SETUP-LIMA.md) — local Mac/Lima single-node
+- [docs/SETUP-LOCAL.md](docs/SETUP-LOCAL.md) — Rancher Desktop + kind on macOS for local iteration
 - [docs/SETUP-STANDALONE.md](docs/SETUP-STANDALONE.md) — self-managed kubeadm, multi-node (DigitalOcean worked example, plus notes on Hetzner / OCI / EC2 / on-prem)
 - [docs/SETUP-HYPERSCALER.md](docs/SETUP-HYPERSCALER.md) — Amazon EKS and Google GKE: what works, what doesn't, and the provider-specific controls beyond CIS
 
@@ -78,7 +78,7 @@ fail / warn report with remediation guidance to
 `reports/assess_<ts>/assessment.md`. No Tier 1 manifests, no Ansible
 playbook, no apiserver restart. Read-only.
 
-Works on any cluster — managed K8s, kubeadm, Lima, kind. ~5 minutes.
+Works on any cluster — managed K8s, kubeadm, kind. ~5 minutes.
 
 ### Full hardening pipeline
 
@@ -92,8 +92,8 @@ inventory and `--skip-tier2` flag change.
 cp tier2-ansible/inventory/hosts.ini.example tier2-ansible/inventory/hosts.ini
 $EDITOR tier2-ansible/inventory/hosts.ini   # follow the setup guide for content
 
-./harden.py all                              # standalone or Lima
-./harden.py all --skip-tier2                 # managed K8s
+./harden.py all                              # standalone (kubeadm with SSH)
+./harden.py all --skip-tier2                 # local kind OR managed K8s (no SSH)
 ```
 
 Or run phases individually:
@@ -144,9 +144,8 @@ in the denominator. If you exclude warns you'll see higher numbers.
 
 | Topology                                | kube-bench (baseline → post) | kubescape (baseline → post) | CP1 | CP2 |
 |-----------------------------------------|------------------------------|------------------------------|-----|-----|
-| Single node (Lima, untainted CP) v1.29  | 46.9% → 58.5% (+11.6)        | 46.4% → 50.2% (+3.8)         | n/a *| n/a * |
-| 3 nodes (DigitalOcean) v1.29            | 56.6% → 68.9% (+12.3)        | 46.4% → 50.2% (+3.8)         | n/a *| n/a * |
-| **3 nodes (DigitalOcean) v1.35**        | **46.9% → 58.5% (+11.6)**    | **39.7% → 49.2% (+9.5)**     | **PASS** | **PASS** |
+| Local kind (3 nodes, --skip-tier2) v1.35 | 46.9% → 46.9% (0.0)          | 40.3% → 40.0% (-0.3)         | **PASS** | **PASS** |
+| **3 nodes (DigitalOcean, full pipeline) v1.35** | **46.9% → 58.5% (+11.6)** | **39.7% → 49.2% (+9.5)** | **PASS** | **PASS** |
 
 \* Pre-T8 reference runs that predate the workload-validation
 harness. The 2026-05-21 v1.35 run is the first end-to-end pipeline
@@ -208,7 +207,6 @@ The remaining 5-8% is **Tier 3 manual work** documented in
 ├── scripts/                          # reusable setup/teardown scripts
 │   ├── prep-node.sh                  # bootstrap a Ubuntu node for kubeadm
 │   ├── install-kubescape.sh          # arch-detecting kubescape CLI installer
-│   ├── lima-up.sh / lima-down.sh     # Mac/Lima single-node lifecycle
 │   └── standalone-bootstrap.sh       # 1 CP + 2 worker kubeadm bootstrap
 ├── workloads/                        # workload-validation harness (issue #1)
 │   ├── admin/v1/                     # pre-hardening admin add-ons
@@ -221,7 +219,7 @@ The remaining 5-8% is **Tier 3 manual work** documented in
 └── docs/
     ├── ARCHITECTURE.md
     ├── AGENTIC-MODE.md           # runbook for autonomous coding agents
-    ├── SETUP-LIMA.md
+    ├── SETUP-LOCAL.md            # Rancher Desktop + kind on macOS
     ├── SETUP-STANDALONE.md
     ├── SETUP-HYPERSCALER.md
     ├── ROLLBACK.md

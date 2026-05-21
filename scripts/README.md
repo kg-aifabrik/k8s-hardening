@@ -7,15 +7,14 @@ per-environment setup guides under [`docs/`](../docs/).
 |--------|---------------|--------------|
 | [`prep-node.sh`](prep-node.sh) | On a target node (as root) | Set hostname, load kernel modules + sysctls, disable swap, install containerd + kubeadm/kubelet/kubectl v1.35. Idempotent. |
 | [`install-kubescape.sh`](install-kubescape.sh) | On the host that will run `harden.py` (as root) | Download the kubescape CLI release binary and install to `/usr/local/bin`. Auto-detects OS (Linux/macOS) + arch (amd64/arm64). |
-| [`lima-up.sh`](lima-up.sh) | macOS workstation | Full Lima single-node provisioning: launch VM, run `prep-node.sh`, `kubeadm init`, install Flannel, set up tooling, write inventory. |
-| [`lima-down.sh`](lima-down.sh) | macOS workstation | Stop and delete the Lima VM. |
 | [`standalone-bootstrap.sh`](standalone-bootstrap.sh) | Workstation with SSH to the 3 VMs | End-to-end bootstrap of a 1 CP + 2 worker kubeadm cluster on already-provisioned Ubuntu VMs (DigitalOcean, Hetzner, EC2, on-prem, etc.). |
 
 ## When to use which
 
-- **First time on a Mac, want to try the framework:** use [`lima-up.sh`](lima-up.sh).
-  Read [docs/SETUP-LIMA.md](../docs/SETUP-LIMA.md) for the caveats
-  about what's actually exercised on a single node.
+- **Local development on a Mac:** there's no bootstrap script — the
+  flow is `kind create cluster` + `./harden.py all --skip-tier2`.
+  See [docs/SETUP-LOCAL.md](../docs/SETUP-LOCAL.md) for the Rancher
+  Desktop + kind walkthrough.
 - **Realistic multi-node test on cloud VMs:** provision 3 Ubuntu
   VMs (any provider), then use [`standalone-bootstrap.sh`](standalone-bootstrap.sh).
   Read [docs/SETUP-STANDALONE.md](../docs/SETUP-STANDALONE.md) for
@@ -28,17 +27,6 @@ per-environment setup guides under [`docs/`](../docs/).
   `./harden.py all --skip-tier2`.
 
 ## Quick usage
-
-### Lima single-node (Mac)
-
-```bash
-brew install lima
-bash scripts/lima-up.sh                  # provision + bootstrap, don't auto-run pipeline
-RUN_HARDEN=1 bash scripts/lima-up.sh     # provision + bootstrap + ./harden.py all
-
-# When you're done:
-bash scripts/lima-down.sh
-```
 
 ### Standalone multi-node (e.g., DigitalOcean)
 
@@ -70,11 +58,10 @@ All scripts honor these (defaults shown):
 
 | Variable | Default | Used by |
 |----------|---------|---------|
-| `REPO_URL` | `https://github.com/kg-aifabrik/k8s-hardening.git` | `lima-up.sh`, `standalone-bootstrap.sh` |
-| `FLANNEL_URL` | latest v0.25.1 manifest | both setup scripts |
+| `REPO_URL` | `https://github.com/kg-aifabrik/k8s-hardening.git` | `standalone-bootstrap.sh` |
+| `FLANNEL_URL` | latest v0.25.1 manifest | `standalone-bootstrap.sh` |
 | `K8S_POD_CIDR` | `10.244.0.0/16` (matches Flannel default) | `standalone-bootstrap.sh` |
-| `RUN_HARDEN` | `0` | both setup scripts |
-| `VM_NAME` | `k8s-harden` | Lima scripts |
+| `RUN_HARDEN` | `0` | `standalone-bootstrap.sh` |
 | `SSH_KEY` | `~/.ssh/id_ed25519` | `standalone-bootstrap.sh` |
 
 ## What these scripts deliberately don't do
@@ -86,8 +73,11 @@ All scripts honor these (defaults shown):
   thin or very forked. The setup guides under [`docs/`](../docs/)
   walk through provisioning for each provider.
 
-- **Tear down cloud VMs.** Same reason. `lima-down.sh` is the only
-  teardown helper because Lima is uniform across Macs.
+- **Tear down cloud VMs.** Same reason — provider-specific.
+
+- **Manage local kind clusters.** `kind create cluster` and `kind
+  delete cluster` are two-line invocations from the docs; wrapping
+  them adds no value.
 
 - **Manage hyperscaler clusters.** EKS/GKE provisioning belongs in
   your IaC (Terraform/Pulumi/eksctl). Once the cluster exists,

@@ -146,7 +146,7 @@ Look at the node names / labels:
   Tier 2 should work.
   Write a proper inventory and run `./harden.py all`.
 - **Anything else** (k3s, OpenShift, kind) → check
-  [SETUP-LIMA.md](SETUP-LIMA.md) for kind caveats. For others, prefer
+  [SETUP-LOCAL.md](SETUP-LOCAL.md) for kind caveats. For others, prefer
   `--skip-tier2` and document the limitation.
 
 ### B2. Install pre-reqs locally
