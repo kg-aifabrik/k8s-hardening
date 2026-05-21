@@ -681,11 +681,14 @@ def phase_workload_deploy(kind: str, version: str,
     log(f"=== PHASE: workload-deploy {kind}/{version} "
         f"{('tenant=' + tenant) if tenant else ''} ===")
 
-    # Any apply that creates a Pod goes through Kyverno's admission
-    # webhook once Tier 1 has installed it. If we got here on the
-    # tail of a Tier-2 apiserver restart from a prior run, Kyverno's
-    # Service might briefly have no endpoints — wait until the
-    # webhook actually responds before applying anything.
+    # Any apply we do here goes through the apiserver, and (once
+    # Tier 1 has run) the Kyverno admission webhook. On a re-run
+    # against an already-hardened cluster, either layer can be
+    # mid-restart from the previous Tier-2 patches. Wait for both
+    # before touching anything — wait_for_apiserver loops up to
+    # 5 min on /healthz, wait_for_kyverno is a no-op when Kyverno
+    # isn't installed (first-time runs).
+    wait_for_apiserver()
     wait_for_kyverno()
 
     if kind == "admin" and version == "v1":
