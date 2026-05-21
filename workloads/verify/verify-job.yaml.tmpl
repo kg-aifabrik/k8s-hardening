@@ -126,7 +126,12 @@ spec:
                 fail "web -> api proxy_pass broken"
               fi
 
-              "$PSQL" "host=db-0.db.__NS__.svc.cluster.local user=postgres dbname=postgres" \
+              # Use the headless Service name (resolves to pod IPs) rather
+              # than the pod FQDN db-0.db.<NS>.svc.cluster.local. psql
+              # via musl libc occasionally fails to translate the latter
+              # even when wget/redis-cli can — the Service name is
+              # boring DNS that works universally.
+              "$PSQL" "host=db.__NS__.svc.cluster.local user=postgres dbname=postgres" \
                 -c "CREATE TABLE IF NOT EXISTS verify_smoke (id serial primary key, ts timestamptz default now());" \
                 -c "INSERT INTO verify_smoke DEFAULT VALUES RETURNING id;" \
                 -c "SELECT count(*) FROM verify_smoke;" >/tmp/db.out 2>&1 \
@@ -140,11 +145,22 @@ spec:
                 fail "queue-worker has not pushed anything to redis yet"
               fi
 
-              LAST_PING=$("$REDIS_CLI" -h cache.__NS__.svc.cluster.local GET cron-pinger:last-success || echo "")
+              # cron-pinger fires every 1 min; on a freshly-deployed
+              # tenant the verify Job may run before the first tick.
+              # Retry up to ~90s so we don't fail on what's purely a
+              # cold-start timing issue.
+              LAST_PING=""
+              for i in 1 2 3 4 5 6 7 8 9; do
+                LAST_PING=$("$REDIS_CLI" -h cache.__NS__.svc.cluster.local \
+                    GET cron-pinger:last-success || echo "")
+                [ -n "$LAST_PING" ] && break
+                echo "    (cron-pinger not yet, retry $i/9 in 10s)"
+                sleep 10
+              done
               if [ -n "$LAST_PING" ]; then
                 ok "cron-pinger last success: $LAST_PING"
               else
-                fail "cron-pinger has not recorded a success yet"
+                fail "cron-pinger has not recorded a success after ~90s wait"
               fi
 
               echo "===== Summary ====="
