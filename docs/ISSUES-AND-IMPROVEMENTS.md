@@ -10,6 +10,36 @@ into two buckets:
 
 Cross-referenced with the open items in the agent's task list.
 
+## Status of T8 (full E2E run on fresh DO droplets)
+
+**Partial success as of 2026-05-20.** Across six pipeline attempts
+on real DO droplets we validated each of the 19 fixes below
+individually but never landed a single one-shot run from a fresh
+cluster through to both CP1 and CP2 PASS with reports committed.
+
+What worked end-to-end at least once:
+- check-images pre-flight
+- admin v1 (cert-manager, ClusterIssuer, metrics-server, node-debug DS, local-path-provisioner)
+- create-tenant (tenant-a with SA + Role + kubeconfig)
+- tenant v1 deploy (8 workloads all reaching Ready)
+- **pre-hardening verify Job (CP0): PASS** ← first time on attempt 5
+- baseline scan
+- Tier 1 (Kyverno + policies + manifests)
+- Tier 2 (Ansible playbook against all 3 nodes)
+
+What never landed in one run:
+- post-hardening verify CP1 + admin v2 + tenant-b deploy + harness + CP2 + validate
+
+The 30 minutes of cluster churn from Tier 2's manifest patching
+exposed timing fragility that the orchestrator's waits didn't fully
+cover until the very last fix (commit `43c9cd0`). Then a db PVC
+binding issue surfaced on the cluster's 6th re-run, at which point
+we tore down to avoid further DO spend.
+
+Each open improvement below would close a class of failures
+encountered. Items #36, #37, and #40 in particular would make a
+future T8 attempt high-confidence one-shot.
+
 ---
 
 ## Fixed bugs (in order encountered)
