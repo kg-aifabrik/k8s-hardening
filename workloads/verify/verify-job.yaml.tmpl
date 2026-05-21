@@ -65,11 +65,11 @@ spec:
           volumeMounts:
             - { name: scratch,   mountPath: /tmp }
             - { name: apk-cache, mountPath: /var/cache/apk }
-            - { name: apk-local, mountPath: /usr/local }
-            # apk needs to update /etc/apk on install. Mounting an
-            # emptyDir on /etc isn't an option (loses /etc/passwd
-            # etc.); instead we install into a writable prefix via
-            # `apk --root /tmp/sysroot add ...`.
+            # NOTE: do NOT mount anything at /usr/local — that path
+            # contains the postgres image's own bin/psql, and an
+            # emptyDir overlay would shadow it. The earlier
+            # apk-local mount turned out to be unnecessary because
+            # we install into /tmp/sysroot, not /usr/local.
           command: ["bash", "-euo", "pipefail", "-c"]
           args:
             - |
@@ -160,6 +160,4 @@ spec:
         - name: scratch
           emptyDir: {}
         - name: apk-cache
-          emptyDir: {}
-        - name: apk-local
           emptyDir: {}
